@@ -12,7 +12,7 @@ android {
 
     defaultConfig {
         applicationId = "com.htlac.hitv" // 已修改为 hitv
-        minSdk = 23
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
