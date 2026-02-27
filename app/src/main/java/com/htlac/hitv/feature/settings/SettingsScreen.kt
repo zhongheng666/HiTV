@@ -51,17 +51,17 @@ import kotlinx.coroutines.delay
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: SettingsViewModel = hiltViewModel(),
+    onNavigateToPlayer: () -> Unit // 新增：当解析成功后，主 Activity 会传一个跳转指令进来
 ) {
     val savedIptvUrl by viewModel.iptvUrl.collectAsState()
     val savedEpgUrl by viewModel.epgUrl.collectAsState()
+    val syncState by viewModel.syncState.collectAsState() // 监听解析状态
 
     var inputIptvText by remember { mutableStateOf("") }
     var inputEpgText by remember { mutableStateOf("") }
 
     val saveButtonFocusRequester = remember { FocusRequester() }
-
-    // 引入焦点大管家和键盘控制器
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -69,11 +69,20 @@ fun SettingsScreen(
     val serverUrl = if (localIp.isNotEmpty()) "http://$localIp:8080" else ""
     val qrCodeBitmap = remember(serverUrl) { QrCodeUtil.generateQrCode(serverUrl) }
 
+    // 状态监听：成功就跳走，失败就重置以便用户修改
+    LaunchedEffect(syncState) {
+        if (syncState is SyncState.Success) {
+            onNavigateToPlayer()
+            viewModel.resetState()
+        }
+    }
+
     DisposableEffect(Unit) {
         val webServer = HiTvWebServer(port = 8080) { iptv, epg ->
             if (iptv.isNotEmpty()) inputIptvText = iptv
             if (epg.isNotEmpty()) inputEpgText = epg
-            viewModel.saveUrls(iptv, epg)
+            // 收到手机推送后，直接自动触发保存和解析！不需要遥控器再点一次
+            viewModel.saveUrlsAndSync(iptv, epg)
         }
         try { webServer.start() } catch (e: Exception) { e.printStackTrace() }
         onDispose { webServer.stop() }
@@ -84,12 +93,16 @@ fun SettingsScreen(
         if (inputEpgText.isEmpty() && savedEpgUrl.isNotEmpty()) inputEpgText = savedEpgUrl
     }
 
-    // 完美解决自动弹键盘：锁定焦点给按钮，并强行隐藏键盘
     LaunchedEffect(Unit) {
-        delay(50) // 等待界面渲染
+        delay(50)
         saveButtonFocusRequester.requestFocus()
         keyboardController?.hide()
     }
+
+    // 根据不同的状态，决定按钮上显示的文字和颜色
+    val isLoading = syncState is SyncState.Loading
+    val isError = syncState is SyncState.Error
+    val errorMessage = if (isError) (syncState as SyncState.Error).message else ""
 
     Box(
         modifier = Modifier
@@ -103,19 +116,15 @@ fun SettingsScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // ================= 左侧：扫码区域 =================
+            // 左侧扫码区保持不变
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.weight(1f)
             ) {
                 Text("扫码快速配置", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(24.dp))
-
                 Box(
-                    modifier = Modifier
-                        .size(220.dp)
-                        .background(Color.White, RoundedCornerShape(16.dp))
-                        .padding(12.dp),
+                    modifier = Modifier.size(220.dp).background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     if (qrCodeBitmap != null) {
@@ -124,19 +133,16 @@ fun SettingsScreen(
                         Text("获取局域网IP失败", color = Color.Red)
                     }
                 }
-
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
                     text = if (serverUrl.isNotEmpty()) "也可在电脑浏览器输入\n$serverUrl" else "请确保设备已连接WiFi",
-                    color = Color.Gray,
-                    fontSize = 16.sp,
-                    textAlign = TextAlign.Center
+                    color = Color.Gray, fontSize = 16.sp, textAlign = TextAlign.Center
                 )
             }
 
             Spacer(modifier = Modifier.width(64.dp))
 
-            // ================= 右侧：手动配置区域 =================
+            // 右侧手动配置区
             Column(
                 horizontalAlignment = Alignment.Start,
                 modifier = Modifier.weight(1.2f)
@@ -144,22 +150,14 @@ fun SettingsScreen(
                 Text("手动输入配置", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // IPTV 框
                 OutlinedTextField(
-                    value = inputIptvText,
-                    onValueChange = { inputIptvText = it },
+                    value = inputIptvText, onValueChange = { inputIptvText = it; if (isError) viewModel.resetState() },
                     label = { Text("IPTV M3U 订阅链接", color = Color.Gray) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // 【魔法：按键拦截】遥控器按下键时，强制焦点往下走，逃离文本框！
+                    modifier = Modifier.fillMaxWidth()
                         .onPreviewKeyEvent { event ->
-                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                                when (event.nativeKeyEvent.keyCode) {
-                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                        focusManager.moveFocus(FocusDirection.Down)
-                                        return@onPreviewKeyEvent true
-                                    }
-                                }
+                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                                focusManager.moveFocus(FocusDirection.Down)
+                                return@onPreviewKeyEvent true
                             }
                             false
                         },
@@ -172,25 +170,15 @@ fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // EPG 框
                 OutlinedTextField(
-                    value = inputEpgText,
-                    onValueChange = { inputEpgText = it },
+                    value = inputEpgText, onValueChange = { inputEpgText = it; if (isError) viewModel.resetState() },
                     label = { Text("节目单 XMLTV 链接", color = Color.Gray) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // 同样加上按键拦截，支持上下键逃离
+                    modifier = Modifier.fillMaxWidth()
                         .onPreviewKeyEvent { event ->
                             if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                                 when (event.nativeKeyEvent.keyCode) {
-                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                        focusManager.moveFocus(FocusDirection.Down)
-                                        return@onPreviewKeyEvent true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_UP -> {
-                                        focusManager.moveFocus(FocusDirection.Up)
-                                        return@onPreviewKeyEvent true
-                                    }
+                                    KeyEvent.KEYCODE_DPAD_DOWN -> { focusManager.moveFocus(FocusDirection.Down); return@onPreviewKeyEvent true }
+                                    KeyEvent.KEYCODE_DPAD_UP -> { focusManager.moveFocus(FocusDirection.Up); return@onPreviewKeyEvent true }
                                 }
                             }
                             false
@@ -202,33 +190,35 @@ fun SettingsScreen(
                     )
                 )
 
-                Spacer(modifier = Modifier.height(32.dp))
+                // 如果出错，显示红色的错误提示
+                if (isError) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(text = errorMessage, color = Color(0xFFFF453A), fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else {
+                    Spacer(modifier = Modifier.height(32.dp))
+                }
 
-                // 保存按钮
                 Button(
                     onClick = {
-                        viewModel.saveUrls(inputIptvText, inputEpgText)
-                        keyboardController?.hide() // 点击保存后也顺手收起键盘
+                        if (!isLoading) {
+                            keyboardController?.hide()
+                            viewModel.saveUrlsAndSync(inputIptvText, inputEpgText)
+                        }
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(saveButtonFocusRequester),
-                    // 【魔法：自定义按钮颜色】强制它始终像一个实体按钮，遥控器选中时底色变白，文字变黑
+                    modifier = Modifier.fillMaxWidth().focusRequester(saveButtonFocusRequester),
                     colors = ButtonDefaults.colors(
-                        containerColor = Color(0xFF0A84FF),         // 平时的底色：苹果蓝
-                        contentColor = Color.White,                 // 平时的字色：白色
-                        focusedContainerColor = Color.White,        // 选中时的底色：白色
-                        focusedContentColor = Color.Black           // 选中时的字色：黑色
+                        containerColor = if (isLoading) Color.Gray else Color(0xFF0A84FF),
+                        contentColor = Color.White,
+                        focusedContainerColor = if (isLoading) Color.Gray else Color.White,
+                        focusedContentColor = if (isLoading) Color.White else Color.Black
                     )
                 ) {
                     Text(
-                        text = "保存配置",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        fontSize = 18.sp,
-                        textAlign = TextAlign.Center,
-                        fontWeight = FontWeight.Bold
+                        // 根据状态动态改变文字
+                        text = if (isLoading) "频道解析中，请稍候..." else "保存并解析",
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        fontSize = 18.sp, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold
                     )
                 }
             }
