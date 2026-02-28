@@ -2,8 +2,11 @@ package com.htlac.hitv.feature.player
 
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -19,9 +22,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,73 +49,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.media3.ui.PlayerView
-import androidx.tv.material3.Text
 import androidx.tv.foundation.PivotOffsets
 import androidx.tv.foundation.lazy.list.TvLazyColumn
 import androidx.tv.foundation.lazy.list.itemsIndexed
 import androidx.tv.foundation.lazy.list.rememberTvLazyListState
+import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
-import com.htlac.hitv.core.data.repository.ChannelRepository
+import com.htlac.hitv.core.data.local.EpgProgram
 import com.htlac.hitv.core.player.Media3Player
 import com.htlac.hitv.core.player.PlaybackState
-import com.htlac.hitv.core.player.PlayerController
-import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import javax.inject.Inject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.ceil
-import kotlin.math.floor
-
-@HiltViewModel
-class PlayerViewModel @Inject constructor(
-    val playerController: PlayerController,
-    channelRepository: ChannelRepository
-) : ViewModel() {
-
-    val allChannels: StateFlow<List<Channel>> = channelRepository.getAllChannels()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-    var isChannelListVisible by mutableStateOf(false)
-    var currentPlayingChannel by mutableStateOf<Channel?>(null)
-
-    // 播放指定频道
-    fun playChannel(channel: Channel) {
-        currentPlayingChannel = channel
-        playerController.play(channel.url)
-        isChannelListVisible = false
-    }
-
-    // 快捷换台：下一个频道
-    fun playNextChannel() {
-        val list = allChannels.value
-        if (list.isEmpty() || currentPlayingChannel == null) return
-        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
-        // 如果到底了，就循环回到第一个
-        val nextIndex = if (currentIndex + 1 < list.size) currentIndex + 1 else 0
-        playChannel(list[nextIndex])
-    }
-
-    // 快捷换台：上一个频道
-    fun playPreviousChannel() {
-        val list = allChannels.value
-        if (list.isEmpty() || currentPlayingChannel == null) return
-        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
-        // 如果到顶了，就循环到最后一个
-        val prevIndex = if (currentIndex - 1 >= 0) currentIndex - 1 else list.lastIndex
-        playChannel(list[prevIndex])
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        playerController.release()
-    }
-}
 
 @Composable
 fun PlayerScreen(
@@ -126,7 +75,6 @@ fun PlayerScreen(
     val channels by viewModel.allChannels.collectAsState()
 
     val debugInfo by (viewModel.playerController as Media3Player).debugInfo.collectAsState()
-
     val rootFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(channels) {
@@ -155,22 +103,26 @@ fun PlayerScreen(
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                            // 侧边栏没打开时，按确认键呼出侧边栏
                             if (!viewModel.isChannelListVisible) {
                                 viewModel.isChannelListVisible = true
                                 return@onPreviewKeyEvent true
                             }
                         }
-                        // 【新增：盲操快捷换台】
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (!viewModel.isChannelListVisible) {
-                                viewModel.playPreviousChannel() // 向上按，切上一个台
+                                viewModel.playPreviousChannel()
                                 return@onPreviewKeyEvent true
                             }
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (!viewModel.isChannelListVisible) {
-                                viewModel.playNextChannel() // 向下按，切下一个台
+                                viewModel.playNextChannel()
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            if (!viewModel.isChannelListVisible) {
+                                viewModel.showEpgCard()
                                 return@onPreviewKeyEvent true
                             }
                         }
@@ -190,7 +142,6 @@ fun PlayerScreen(
             }
         )
 
-        // Debug 面板
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -215,6 +166,26 @@ fun PlayerScreen(
             )
         }
 
+        // ================= 底部 EPG 节目预告卡片 =================
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 48.dp, start = 64.dp, end = 64.dp)
+        ) {
+            AnimatedVisibility(
+                visible = viewModel.isEpgVisible,
+                enter = slideInVertically(initialOffsetY = { it }),
+                exit = slideOutVertically(targetOffsetY = { it })
+            ) {
+                EpgBottomCard(
+                    channelName = viewModel.currentPlayingChannel?.name ?: "",
+                    currentProgram = viewModel.currentProgram,
+                    nextProgram = viewModel.nextProgram
+                )
+            }
+        }
+
         if (viewModel.isChannelListVisible) {
             ChannelListSidebar(
                 channels = channels,
@@ -227,6 +198,63 @@ fun PlayerScreen(
 }
 
 @Composable
+fun EpgBottomCard(
+    channelName: String,
+    currentProgram: EpgProgram?,
+    nextProgram: EpgProgram?
+) {
+    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1C1C1E).copy(alpha = 0.85f), RoundedCornerShape(16.dp))
+            .padding(24.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = channelName,
+            color = Color.White,
+            fontSize = 36.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(0.3f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Spacer(modifier = Modifier.width(32.dp))
+
+        Column(modifier = Modifier.weight(0.7f)) {
+            if (currentProgram != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("正在播放", color = Color(0xFF0A84FF), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(80.dp))
+                    Text(
+                        text = "${timeFormatter.format(Date(currentProgram.startTime))} - ${timeFormatter.format(Date(currentProgram.endTime))}",
+                        color = Color.LightGray, fontSize = 16.sp, modifier = Modifier.width(130.dp)
+                    )
+                    Text(currentProgram.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            } else {
+                Text("暂无当前节目信息", color = Color.Gray, fontSize = 18.sp)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (nextProgram != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("即将播放", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.width(80.dp))
+                    Text(
+                        text = "${timeFormatter.format(Date(nextProgram.startTime))} - ${timeFormatter.format(Date(nextProgram.endTime))}",
+                        color = Color.DarkGray, fontSize = 14.sp, modifier = Modifier.width(130.dp)
+                    )
+                    Text(nextProgram.title, color = Color.LightGray, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ChannelListSidebar(
     channels: List<Channel>,
     currentPlaying: Channel?,
@@ -234,7 +262,6 @@ fun ChannelListSidebar(
     onClose: () -> Unit
 ) {
     var userActionTrigger by remember { mutableIntStateOf(0) }
-
     val tvListState = rememberTvLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
@@ -320,6 +347,7 @@ fun ChannelListSidebar(
                 }
         ) {
             val visibleItems = tvListState.layoutInfo.visibleItemsInfo
+            // 兜底逻辑防止算术异常
             val actualPageSize = if (visibleItems.size > 1) visibleItems.last().index - visibleItems.first().index else 8
             val firstVisible = tvListState.firstVisibleItemIndex
 
@@ -364,7 +392,6 @@ fun ChannelListSidebar(
                                 isFocused = it.isFocused
                                 if (it.isFocused) currentFocusedIndex = index
                             }
-                            // 【核心修复：强制拦截遥控器中心按键，保证绝对能够触发换台】
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                                     if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
