@@ -32,7 +32,6 @@ class PlayerViewModel @Inject constructor(
     val allChannels: StateFlow<List<Channel>> = channelRepository.getAllChannels()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 暴露 EPG 全局后台事件给 UI 弹 Toast
     val epgSyncEvent = epgRepository.epgSyncEvent
 
     var isChannelListVisible by mutableStateOf(false)
@@ -43,8 +42,19 @@ class PlayerViewModel @Inject constructor(
     var nextProgram by mutableStateOf<EpgProgram?>(null)
     private var epgHideJob: Job? = null
 
-    // 【核心新增：EPG 嗅探诊断雷达】
-    var epgDebugInfo by mutableStateOf("EPG 状态: 未开始匹配")
+    var epgDebugInfo by mutableStateOf("EPG 状态: 等待加载中...")
+
+    init {
+        // 【核心修复：并发状态同步】
+        // 监听后台 EPG 解析。一旦收到“成功”的信号，立刻自动为当前频道重新拉取一遍数据！
+        viewModelScope.launch {
+            epgSyncEvent.collect { message ->
+                if (message.contains("成功") || message.contains("✅")) {
+                    currentPlayingChannel?.let { fetchEpgForChannel(it) }
+                }
+            }
+        }
+    }
 
     fun playChannel(channel: Channel) {
         currentPlayingChannel = channel
@@ -60,23 +70,20 @@ class PlayerViewModel @Inject constructor(
             currentProgram = null
             nextProgram = null
 
-            // 诊断 1：开始匹配
             epgDebugInfo = "🔍 EPG 尝试匹配: tvg-id=[${channel.tvgId}], 名称=[${channel.name}]"
 
             val programs = epgRepository.getProgramsForChannel(channel.tvgId, channel.name).firstOrNull() ?: emptyList()
 
-            // 诊断 2：数据库检索结果
             if (programs.isEmpty()) {
-                epgDebugInfo += "\n❌ 结果: 数据库中未找到相关节目。请检查源的 tvg-id 是否一致！"
+                epgDebugInfo += "\n❌ 结果: 数据库未找到相关节目 (可能 EPG 仍在后台下载，请稍候...)"
                 return@launch
             }
 
             val currentTime = ntpManager.getCurrentTime()
-            epgDebugInfo += "\n✅ 结果: 找到 ${programs.size} 条数据。系统时间戳: $currentTime"
+            epgDebugInfo += "\n✅ 结果: 找到 ${programs.size} 条数据。"
 
             val currentIndex = programs.indexOfFirst { it.startTime <= currentTime && it.endTime > currentTime }
 
-            // 诊断 3：时间过滤结果
             if (currentIndex != -1) {
                 currentProgram = programs[currentIndex]
                 if (currentIndex + 1 < programs.size) {
@@ -84,7 +91,7 @@ class PlayerViewModel @Inject constructor(
                 }
                 epgDebugInfo += "\n🎯 时间匹配成功！"
             } else {
-                epgDebugInfo += "\n⚠️ 警告: 有数据，但没有找到当前时间段的节目 (可能是 EPG 过期或时区错误)"
+                epgDebugInfo += "\n⚠️ 警告: 有数据但未找到当前时间段的节目"
                 val futureIndex = programs.indexOfFirst { it.endTime > currentTime }
                 if (futureIndex != -1) {
                     nextProgram = programs[futureIndex]

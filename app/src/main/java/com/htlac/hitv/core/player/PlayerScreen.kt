@@ -1,7 +1,6 @@
 package com.htlac.hitv.feature.player
 
 import android.view.KeyEvent
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -23,6 +22,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,13 +51,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.ui.PlayerView
-import androidx.tv.foundation.PivotOffsets
-import androidx.tv.foundation.lazy.list.TvLazyColumn
-import androidx.tv.foundation.lazy.list.itemsIndexed
-import androidx.tv.foundation.lazy.list.rememberTvLazyListState
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
@@ -78,9 +75,10 @@ fun PlayerScreen(
 
     val debugInfo by (viewModel.playerController as Media3Player).debugInfo.collectAsState()
     val rootFocusRequester = remember { FocusRequester() }
+
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // 【核心新增：监听 EPG 后台事件并弹窗】
+    // 监听后台全局事件弹 Toast
     LaunchedEffect(Unit) {
         viewModel.epgSyncEvent.collect { message ->
             android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
@@ -160,7 +158,6 @@ fun PlayerScreen(
                 .padding(16.dp)
         ) {
             Text(
-                // 将 EPG 诊断信息合并显示在面板上
                 text = "🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo",
                 color = Color(0xFF00FF00),
                 fontSize = 12.sp,
@@ -177,7 +174,6 @@ fun PlayerScreen(
             )
         }
 
-        // ================= 底部 EPG 节目预告卡片 =================
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -273,7 +269,8 @@ fun ChannelListSidebar(
     onClose: () -> Unit
 ) {
     var userActionTrigger by remember { mutableIntStateOf(0) }
-    val tvListState = rememberTvLazyListState()
+    // 【修改 1：换回官方推荐的普通 LazyListState】
+    val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
@@ -290,7 +287,7 @@ fun ChannelListSidebar(
 
     LaunchedEffect(Unit) {
         if (channels.isNotEmpty()) {
-            tvListState.scrollToItem(currentFocusedIndex, 0)
+            listState.scrollToItem(currentFocusedIndex, 0)
             delay(150)
             focusRequesters[currentFocusedIndex]?.requestFocus()
         }
@@ -316,7 +313,7 @@ fun ChannelListSidebar(
                 .padding(24.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                        val layoutInfo = tvListState.layoutInfo
+                        val layoutInfo = listState.layoutInfo
                         val visibleItems = layoutInfo.visibleItemsInfo
 
                         if (visibleItems.isNotEmpty()) {
@@ -329,7 +326,8 @@ fun ChannelListSidebar(
                                         isJumpingPage = true
                                         val target = (currentFocusedIndex - actualPageSize).coerceAtLeast(0)
                                         coroutineScope.launch {
-                                            tvListState.scrollToItem(target, 0)
+                                            // scrollToItem(target, 0) 本身就会强制把 target 对齐到顶部
+                                            listState.scrollToItem(target, 0)
                                             delay(100)
                                             try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
                                             isJumpingPage = false
@@ -343,7 +341,7 @@ fun ChannelListSidebar(
                                         isJumpingPage = true
                                         val target = (currentFocusedIndex + actualPageSize).coerceAtMost(channels.lastIndex)
                                         coroutineScope.launch {
-                                            tvListState.scrollToItem(target, 0)
+                                            listState.scrollToItem(target, 0)
                                             delay(100)
                                             try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
                                             isJumpingPage = false
@@ -357,10 +355,9 @@ fun ChannelListSidebar(
                     false
                 }
         ) {
-            val visibleItems = tvListState.layoutInfo.visibleItemsInfo
-            // 兜底逻辑防止算术异常
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
             val actualPageSize = if (visibleItems.size > 1) visibleItems.last().index - visibleItems.first().index else 8
-            val firstVisible = tvListState.firstVisibleItemIndex
+            val firstVisible = listState.firstVisibleItemIndex
 
             val currentPage = (firstVisible / actualPageSize) + 1
             val totalPages = ceil(channels.size.toFloat() / actualPageSize).toInt().coerceAtLeast(1)
@@ -376,10 +373,10 @@ fun ChannelListSidebar(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            TvLazyColumn(
-                state = tvListState,
+            // 【修改 2：换回官方标准的 LazyColumn】
+            LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
-                pivotOffsets = PivotOffsets(parentFraction = 0f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 itemsIndexed(

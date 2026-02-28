@@ -18,7 +18,8 @@ class EpgRepository @Inject constructor(
     private val epgParser: EpgParser,
     private val ntpManager: NtpManager
 ) {
-    // 【MVVM 规范】：暴露一个热流 (SharedFlow) 用于向外发送全局事件
+    private val TAG = "HiTV_Debug"
+
     private val _epgSyncEvent = MutableSharedFlow<String>()
     val epgSyncEvent = _epgSyncEvent.asSharedFlow()
 
@@ -28,8 +29,7 @@ class EpgRepository @Inject constructor(
     }
 
     suspend fun syncEpgFromUrl(epgUrl: String) {
-        Log.d("EpgRepository", "准备开始同步 EPG: $epgUrl")
-        // 发送开始通知
+        Log.i(TAG, "📡 EPG 节目单开始在后台下载解析: $epgUrl")
         _epgSyncEvent.emit("📡 EPG 节目单开始在后台下载解析...")
 
         epgDao.deleteAll()
@@ -38,17 +38,20 @@ class EpgRepository @Inject constructor(
         try {
             epgParser.parse(epgUrl)
                 .catch { e ->
-                    Log.e("EpgRepository", "同步 EPG 失败", e)
+                    Log.e(TAG, "❌ EPG 解析失败: ${e.message}", e)
                     _epgSyncEvent.emit("❌ EPG 解析失败: ${e.message}")
                 }
                 .collect { batchPrograms ->
                     epgDao.insertPrograms(batchPrograms)
                     totalPrograms += batchPrograms.size
                 }
-            Log.d("EpgRepository", "EPG 同步完成！共 $totalPrograms 条。")
-            // 发送成功通知
+
+            // 【核心：将 EPG 获取结果强力输出到 Logcat】
+            Log.i(TAG, "✅ EPG 更新成功！后台共解析入库 $totalPrograms 条节目。")
             _epgSyncEvent.emit("✅ EPG 更新成功！共解析 $totalPrograms 条节目。")
+
         } catch (e: Exception) {
+            Log.e(TAG, "❌ EPG 更新发生异常", e)
             _epgSyncEvent.emit("❌ EPG 更新发生异常")
         }
     }
