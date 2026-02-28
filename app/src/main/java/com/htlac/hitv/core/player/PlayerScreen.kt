@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +57,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.media3.ui.PlayerView
 import androidx.tv.foundation.PivotOffsets
 import androidx.tv.foundation.lazy.list.TvLazyColumn
 import androidx.tv.foundation.lazy.list.itemsIndexed
@@ -64,7 +64,6 @@ import androidx.tv.foundation.lazy.list.rememberTvLazyListState
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
-import com.htlac.hitv.core.player.Media3Player
 import com.htlac.hitv.core.player.PlaybackState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -79,11 +78,13 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {}
 ) {
-    val playbackState by viewModel.playerController.playbackState.collectAsState()
-    val errorMessage by viewModel.playerController.errorMessage.collectAsState()
-    val channels by viewModel.allChannels.collectAsState()
-    val debugInfo by (viewModel.playerController as Media3Player).debugInfo.collectAsState()
+    // 【核心架构升级】：从活跃的 Controller 中直接收集状态，UI层彻底解耦底层播放器类型！
+    val activeController by viewModel.activePlayer.collectAsState()
+    val playbackState by activeController.playbackState.collectAsState()
+    val errorMessage by activeController.errorMessage.collectAsState()
+    val debugInfo by activeController.debugInfo.collectAsState()
 
+    val channels by viewModel.allChannels.collectAsState()
     val currentIptv by viewModel.currentIptvUrl.collectAsState()
     val iptvHistory by viewModel.iptvHistory.collectAsState()
     val currentEpg by viewModel.currentEpgUrl.collectAsState()
@@ -123,7 +124,6 @@ fun PlayerScreen(
             .onPreviewKeyEvent { event ->
                 if (viewModel.isSyncing) return@onPreviewKeyEvent true
 
-                // 【核心修复：全局拦截只在没有任何侧边栏打开时才生效，把确认键交还给列表子组件！】
                 if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
@@ -141,7 +141,6 @@ fun PlayerScreen(
                         }
                     }
 
-                    // 盲操快捷换台也只在无侧边栏时生效
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                         when (event.nativeKeyEvent.keyCode) {
                             KeyEvent.KEYCODE_DPAD_UP -> { viewModel.playPreviousChannel(); return@onPreviewKeyEvent true }
@@ -154,11 +153,15 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx -> PlayerView(ctx).apply { player = viewModel.playerController.player; useController = false } }
-        )
+        // 1. 视频底层：基于 Key 重绘的引擎热切换魔法
+        key(activeController) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx -> activeController.getPlayerView(ctx) }
+            )
+        }
 
+        // 2. 加载遮罩 (切换源时显示)
         if (viewModel.isSyncing) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.8f)), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -169,22 +172,26 @@ fun PlayerScreen(
             }
         }
 
+        // 3. Debug 面板
         Box(
             modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(0.7f), RoundedCornerShape(8.dp)).padding(16.dp)
         ) {
             Text("🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo", color = Color(0xFF00FF00), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
         }
 
+        // 4. 错误提示
         if (playbackState == PlaybackState.ERROR && !viewModel.isSyncing) {
             Text("播放失败\n\n$errorMessage", color = Color.Red, textAlign = TextAlign.Center, modifier = Modifier.background(Color.Black.copy(0.8f)).padding(16.dp))
         }
 
+        // 5. 底部 EPG 卡片
         Box(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 48.dp, start = 64.dp, end = 64.dp)) {
             AnimatedVisibility(visible = viewModel.isEpgVisible, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
                 EpgBottomCard(viewModel.currentPlayingChannel?.name ?: "", viewModel.currentProgram, viewModel.nextProgram)
             }
         }
 
+        // 6. 左侧：受重点保护的神级频道列表
         if (viewModel.isChannelListVisible) {
             ChannelListSidebar(
                 channels = channels,
@@ -194,6 +201,7 @@ fun PlayerScreen(
             )
         }
 
+        // 7. 右侧：高级设置抽屉
         if (viewModel.isAdvancedSettingsVisible) {
             AdvancedSettingsSidebar(
                 currentIptv = currentIptv,
@@ -214,7 +222,7 @@ fun PlayerScreen(
 }
 
 /**
- * 高级设置：加入了超时自动隐藏机制
+ * 右侧抽屉：高级与多源设置 (使用安全的 LazyColumn 防止闪退)
  */
 @Composable
 fun AdvancedSettingsSidebar(
@@ -235,7 +243,7 @@ fun AdvancedSettingsSidebar(
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
 
-    // 【新增：15 秒无操作自动收起高级设置】
+    // 15 秒无操作自动收起高级设置
     LaunchedEffect(userActionTrigger) {
         delay(15000)
         onClose()
@@ -257,9 +265,7 @@ fun AdvancedSettingsSidebar(
             .background(Color.Black.copy(alpha = 0.1f))
             .clickable { onClose() }
             .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                    userActionTrigger++ // 记录用户的任何操作，重置倒计时
-                }
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) userActionTrigger++
                 false
             },
         contentAlignment = Alignment.CenterEnd
@@ -386,7 +392,7 @@ fun TvActionItem(text: String, onClick: () -> Unit, focusRequester: FocusRequest
 }
 
 /**
- * 频道列表
+ * 【最高保护级别】：严格遵循物理空间测算的极品频道列表！
  */
 @Composable
 fun ChannelListSidebar(
@@ -406,10 +412,7 @@ fun ChannelListSidebar(
 
     var isJumpingPage by remember { mutableStateOf(false) }
 
-    LaunchedEffect(userActionTrigger) {
-        delay(8000)
-        onClose()
-    }
+    LaunchedEffect(userActionTrigger) { delay(8000); onClose() }
 
     LaunchedEffect(Unit) {
         if (channels.isNotEmpty()) {
@@ -419,149 +422,90 @@ fun ChannelListSidebar(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.1f))
-            .clickable { onClose() }
-            .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                    userActionTrigger++
-                }
-                false
-            }
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxHeight()
-                .width(360.dp)
-                .background(Color.Black.copy(alpha = 0.45f))
-                .padding(24.dp)
-                .onPreviewKeyEvent { event ->
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }.onPreviewKeyEvent { event -> if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) { userActionTrigger++ }; false }) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxHeight().width(360.dp).background(Color.Black.copy(alpha = 0.45f)).padding(24.dp)
+        ) {
+            val availableHeight = maxHeight.value
+            val actualPageSize = maxOf(1, floor((availableHeight - 80f) / 68f).toInt())
+
+            val currentPageIndex = currentFocusedIndex / actualPageSize
+            val currentPageIndicator = currentPageIndex + 1
+            val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / actualPageSize.toFloat()).toInt()
+
+            Column(
+                modifier = Modifier.fillMaxSize().onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                        val layoutInfo = tvListState.layoutInfo
-                        val visibleItems = layoutInfo.visibleItemsInfo
-
-                        if (visibleItems.isNotEmpty()) {
-                            val actualPageSize = (visibleItems.last().index - visibleItems.first().index).coerceAtLeast(1)
-
-                            when (event.nativeKeyEvent.keyCode) {
-                                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                    if (isJumpingPage) return@onPreviewKeyEvent true
-                                    if (currentFocusedIndex > 0) {
-                                        isJumpingPage = true
-                                        val target = (currentFocusedIndex - actualPageSize).coerceAtLeast(0)
-                                        coroutineScope.launch {
-                                            tvListState.scrollToItem(target, 0)
-                                            delay(100)
-                                            try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
-                                            isJumpingPage = false
-                                        }
+                        when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                if (isJumpingPage) return@onPreviewKeyEvent true
+                                if (channels.isNotEmpty() && currentPageIndex > 0) {
+                                    isJumpingPage = true
+                                    val target = (currentPageIndex - 1) * actualPageSize
+                                    coroutineScope.launch {
+                                        tvListState.scrollToItem(target, 0)
+                                        delay(100)
+                                        try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
+                                        isJumpingPage = false
                                     }
-                                    return@onPreviewKeyEvent true
                                 }
-                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                    if (isJumpingPage) return@onPreviewKeyEvent true
-                                    if (currentFocusedIndex < channels.lastIndex) {
-                                        isJumpingPage = true
-                                        val target = (currentFocusedIndex + actualPageSize).coerceAtMost(channels.lastIndex)
-                                        coroutineScope.launch {
-                                            tvListState.scrollToItem(target, 0)
-                                            delay(100)
-                                            try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
-                                            isJumpingPage = false
-                                        }
+                                return@onPreviewKeyEvent true
+                            }
+                            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                if (isJumpingPage) return@onPreviewKeyEvent true
+                                if (channels.isNotEmpty() && currentPageIndex < totalPages - 1) {
+                                    isJumpingPage = true
+                                    val target = (currentPageIndex + 1) * actualPageSize
+                                    val safeTarget = target.coerceAtMost(channels.lastIndex)
+                                    coroutineScope.launch {
+                                        tvListState.scrollToItem(safeTarget, 0)
+                                        delay(100)
+                                        try { focusRequesters[safeTarget]?.requestFocus() } catch (e: Exception) {}
+                                        isJumpingPage = false
                                     }
-                                    return@onPreviewKeyEvent true
                                 }
+                                return@onPreviewKeyEvent true
                             }
                         }
                     }
                     false
                 }
-        ) {
-            val visibleItems = tvListState.layoutInfo.visibleItemsInfo
-            val actualPageSize = if (visibleItems.size > 1) visibleItems.last().index - visibleItems.first().index else 8
-            val firstVisible = tvListState.firstVisibleItemIndex
-
-            val currentPage = (firstVisible / actualPageSize) + 1
-            val totalPages = ceil(channels.size.toFloat() / actualPageSize).toInt().coerceAtLeast(1)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Text("$currentPage / $totalPages", color = Color.LightGray, fontSize = 14.sp)
-            }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("$currentPageIndicator / $totalPages", color = Color.LightGray, fontSize = 14.sp)
+                }
 
-            Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
-            TvLazyColumn(
-                state = tvListState,
-                modifier = Modifier.fillMaxSize(),
-                pivotOffsets = PivotOffsets(parentFraction = 0f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(
-                    items = channels,
-                    key = { _, channel -> channel.id }
-                ) { index, channel ->
-                    val isPlaying = channel.id == currentPlaying?.id
-                    var isFocused by remember { mutableStateOf(false) }
-                    val requester = focusRequesters.getOrPut(index) { FocusRequester() }
+                TvLazyColumn(state = tvListState, modifier = Modifier.fillMaxSize(), pivotOffsets = PivotOffsets(parentFraction = 0f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(items = channels, key = { _, channel -> channel.id }) { index, channel ->
+                        val isPlaying = channel.id == currentPlaying?.id
+                        var isFocused by remember { mutableStateOf(false) }
+                        val requester = focusRequesters.getOrPut(index) { FocusRequester() }
+                        val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(150), label = "scale")
 
-                    val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(150), label = "scale")
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(60.dp)
-                            .scale(scale)
-                            .shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp))
-                            .focusRequester(requester)
-                            .onFocusChanged {
-                                isFocused = it.isFocused
-                                if (it.isFocused) currentFocusedIndex = index
-                            }
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                                    if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
-                                        onChannelSelected(channel)
-                                        return@onPreviewKeyEvent true
+                        Box(
+                            modifier = Modifier.fillMaxWidth()
+                                .height(60.dp)
+                                .scale(scale).shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp)).focusRequester(requester)
+                                .onFocusChanged { isFocused = it.isFocused; if (it.isFocused) currentFocusedIndex = index }
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                                        if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
+                                            onChannelSelected(channel); return@onPreviewKeyEvent true
+                                        }
                                     }
+                                    false
                                 }
-                                false
-                            }
-                            .focusable()
-                            .clickable { onChannelSelected(channel) }
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (isFocused) Color.White else Color.Transparent)
-                            .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start
+                                .focusable().clickable { onChannelSelected(channel) }.clip(RoundedCornerShape(12.dp)).background(if (isFocused) Color.White else Color.Transparent).padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            Text(
-                                text = String.format("%03d", index + 1),
-                                color = if (isFocused) Color.DarkGray else Color.LightGray,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.width(44.dp)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = channel.name,
-                                color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White),
-                                fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 17.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(modifier = Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Start) {
+                                Text(String.format("%03d", index + 1), color = if (isFocused) Color.DarkGray else Color.LightGray, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(44.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(channel.name, color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White), fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                 }
