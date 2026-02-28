@@ -6,6 +6,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -78,7 +82,6 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {}
 ) {
-    // 【核心架构升级】：从活跃的 Controller 中直接收集状态，UI层彻底解耦底层播放器类型！
     val activeController by viewModel.activePlayer.collectAsState()
     val playbackState by activeController.playbackState.collectAsState()
     val errorMessage by activeController.errorMessage.collectAsState()
@@ -124,6 +127,28 @@ fun PlayerScreen(
             .onPreviewKeyEvent { event ->
                 if (viewModel.isSyncing) return@onPreviewKeyEvent true
 
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                    val keyCode = event.nativeKeyEvent.keyCode
+
+                    // 【新增：拦截 0-9 数字键】
+                    val digit = when (keyCode) {
+                        in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
+                        in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> (keyCode - KeyEvent.KEYCODE_NUMPAD_0).toString()
+                        else -> null
+                    }
+
+                    if (digit != null) {
+                        viewModel.onNumpadInput(digit)
+                        return@onPreviewKeyEvent true
+                    }
+
+                    // 【新增：如果数字面板存在，按确认键直接无视倒计时，瞬间执行换台】
+                    if (viewModel.numpadBuffer.isNotEmpty() && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
+                        viewModel.executeNumpadSwitch()
+                        return@onPreviewKeyEvent true
+                    }
+                }
+
                 if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
@@ -153,7 +178,6 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-        // 1. 视频底层：基于 Key 重绘的引擎热切换魔法
         key(activeController) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
@@ -161,7 +185,6 @@ fun PlayerScreen(
             )
         }
 
-        // 2. 加载遮罩 (切换源时显示)
         if (viewModel.isSyncing) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.8f)), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -172,26 +195,43 @@ fun PlayerScreen(
             }
         }
 
-        // 3. Debug 面板
         Box(
             modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(0.7f), RoundedCornerShape(8.dp)).padding(16.dp)
         ) {
             Text("🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo", color = Color(0xFF00FF00), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
         }
 
-        // 4. 错误提示
+        // 【新增：右上角数字换台提示框】
+        Box(
+            modifier = Modifier.align(Alignment.TopEnd).padding(48.dp)
+        ) {
+            AnimatedVisibility(
+                visible = viewModel.numpadBuffer.isNotEmpty(),
+                enter = fadeIn(tween(150)) + scaleIn(tween(150, delayMillis = 50)),
+                exit = fadeOut(tween(150)) + scaleOut(tween(150))
+            ) {
+                Text(
+                    text = viewModel.numpadBuffer,
+                    color = Color.White,
+                    fontSize = 64.sp, // 超大字号
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 32.dp, vertical = 16.dp)
+                )
+            }
+        }
+
         if (playbackState == PlaybackState.ERROR && !viewModel.isSyncing) {
             Text("播放失败\n\n$errorMessage", color = Color.Red, textAlign = TextAlign.Center, modifier = Modifier.background(Color.Black.copy(0.8f)).padding(16.dp))
         }
 
-        // 5. 底部 EPG 卡片
         Box(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 48.dp, start = 64.dp, end = 64.dp)) {
             AnimatedVisibility(visible = viewModel.isEpgVisible, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
                 EpgBottomCard(viewModel.currentPlayingChannel?.name ?: "", viewModel.currentProgram, viewModel.nextProgram)
             }
         }
 
-        // 6. 左侧：受重点保护的神级频道列表
         if (viewModel.isChannelListVisible) {
             ChannelListSidebar(
                 channels = channels,
@@ -201,7 +241,6 @@ fun PlayerScreen(
             )
         }
 
-        // 7. 右侧：高级设置抽屉
         if (viewModel.isAdvancedSettingsVisible) {
             AdvancedSettingsSidebar(
                 currentIptv = currentIptv,
@@ -243,7 +282,6 @@ fun AdvancedSettingsSidebar(
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
 
-    // 15 秒无操作自动收起高级设置
     LaunchedEffect(userActionTrigger) {
         delay(15000)
         onClose()
@@ -394,6 +432,7 @@ fun TvActionItem(text: String, onClick: () -> Unit, focusRequester: FocusRequest
 /**
  * 【最高保护级别】：严格遵循物理空间测算的极品频道列表！
  */
+@Suppress("DEPRECATION")
 @Composable
 fun ChannelListSidebar(
     channels: List<Channel>,
@@ -460,7 +499,7 @@ fun ChannelListSidebar(
                                     coroutineScope.launch {
                                         tvListState.scrollToItem(safeTarget, 0)
                                         delay(100)
-                                        try { focusRequesters[safeTarget]?.requestFocus() } catch (e: Exception) {}
+                                        try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
                                         isJumpingPage = false
                                     }
                                 }

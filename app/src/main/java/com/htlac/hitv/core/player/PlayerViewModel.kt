@@ -58,6 +58,10 @@ class PlayerViewModel @Inject constructor(
     private var epgHideJob: Job? = null
     var epgDebugInfo by mutableStateOf("EPG 状态: 等待加载中...")
 
+    // 【新增：数字换台相关状态】
+    var numpadBuffer by mutableStateOf("")
+    private var numpadJob: Job? = null
+
     init {
         viewModelScope.launch {
             epgSyncEvent.collect { message ->
@@ -67,16 +71,48 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // 监听引擎开关
         viewModelScope.launch {
             settingsManager.useMpvFlow.collect { isMpvSelected ->
                 val targetEngine = if (isMpvSelected) mpvPlayer else media3Player
                 if (activePlayer.value != targetEngine) {
-                    // 【核心修复：绝对不能调用 release()，只调用 stop() 让出硬件资源即可！】
                     activePlayer.value.stop()
                     activePlayer.value = targetEngine
                     currentPlayingChannel?.let { activePlayer.value.play(it.url) }
                 }
+            }
+        }
+    }
+
+    // 【新增：接收数字输入】
+    fun onNumpadInput(digit: String) {
+        // 输入数字时，为了沉浸式体验，自动收起所有的侧边栏
+        isChannelListVisible = false
+        isAdvancedSettingsVisible = false
+
+        if (numpadBuffer.length >= 4) return // 限制最多输入4位数
+        numpadBuffer += digit
+
+        numpadJob?.cancel()
+        numpadJob = viewModelScope.launch {
+            delay(2000) // 停顿 2 秒后自动确认换台
+            executeNumpadSwitch()
+        }
+    }
+
+    // 【新增：执行数字换台逻辑】
+    fun executeNumpadSwitch() {
+        numpadJob?.cancel()
+        val targetNumber = numpadBuffer.toIntOrNull()
+        numpadBuffer = "" // 瞬间清空 UI 显示
+
+        if (targetNumber != null && targetNumber > 0) {
+            val targetIndex = targetNumber - 1 // 现实中的频道 1 对应列表里的 Index 0
+            val list = allChannels.value
+
+            if (targetIndex in list.indices) {
+                playChannel(list[targetIndex])
+            } else {
+                epgDebugInfo = "❌ 频道号 $targetNumber 不存在 (超出范围)"
             }
         }
     }
@@ -86,7 +122,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             isSyncing = true
             isAdvancedSettingsVisible = false
-            activePlayer.value.stop() // 这里也改为 stop
+            activePlayer.value.stop()
             try {
                 settingsManager.saveIptvUrl(newUrl)
                 channelRepository.syncChannelsFromUrl(newUrl)
@@ -160,7 +196,6 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // 只有当整个 ViewModel 被销毁（App 退出）时，才真正赐死引擎
         media3Player.release()
         mpvPlayer.release()
     }
