@@ -1,6 +1,7 @@
 package com.htlac.hitv.feature.player
 
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.ui.PlayerView
 import androidx.tv.foundation.PivotOffsets
@@ -76,6 +78,14 @@ fun PlayerScreen(
 
     val debugInfo by (viewModel.playerController as Media3Player).debugInfo.collectAsState()
     val rootFocusRequester = remember { FocusRequester() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 【核心新增：监听 EPG 后台事件并弹窗】
+    LaunchedEffect(Unit) {
+        viewModel.epgSyncEvent.collect { message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
 
     LaunchedEffect(channels) {
         if (channels.isNotEmpty() && viewModel.currentPlayingChannel == null) {
@@ -150,7 +160,8 @@ fun PlayerScreen(
                 .padding(16.dp)
         ) {
             Text(
-                text = "🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n$debugInfo",
+                // 将 EPG 诊断信息合并显示在面板上
+                text = "🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo",
                 color = Color(0xFF00FF00),
                 fontSize = 12.sp,
                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace

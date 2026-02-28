@@ -1,6 +1,7 @@
 package com.htlac.hitv.feature.settings
 
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,8 +72,13 @@ fun SettingsScreen(
     val serverUrl = if (localIp.isNotEmpty()) "http://$localIp:8080" else ""
     val qrCodeBitmap = remember(serverUrl) { QrCodeUtil.generateQrCode(serverUrl) }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(syncState) {
         if (syncState is SyncState.Success) {
+            val count = (syncState as SyncState.Success).channelCount
+            // 在电视端，Toast 是极其标准的全局提醒方式，不会抢夺焦点
+            android.widget.Toast.makeText(context, "✅ 成功导入 $count 个频道", android.widget.Toast.LENGTH_LONG).show()
+
             onNavigateToPlayer()
             viewModel.resetState()
         }
