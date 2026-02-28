@@ -53,6 +53,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
+import androidx.tv.foundation.PivotOffsets
+import androidx.tv.foundation.lazy.list.TvLazyColumn
+import androidx.tv.foundation.lazy.list.itemsIndexed
+import androidx.tv.foundation.lazy.list.rememberTvLazyListState
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.repository.ChannelRepository
 import com.htlac.hitv.core.player.Media3Player
@@ -187,10 +191,6 @@ fun PlayerScreen(
     }
 }
 
-/**
- * 终极版 Apple TV 风格侧边栏
- * 特性：动态读取真实可视数量跳页、笔直左对齐排版、极致沉浸半透明
- */
 @Composable
 fun ChannelListSidebar(
     channels: List<Channel>,
@@ -200,47 +200,38 @@ fun ChannelListSidebar(
 ) {
     var userActionTrigger by remember { mutableIntStateOf(0) }
 
-    val listState = rememberLazyListState()
+    val tvListState = rememberTvLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
-    val initialIndex = remember {
-        val idx = channels.indexOfFirst { it.id == currentPlaying?.id }
-        if (idx >= 0) idx else 0
+    // 状态：当前焦点的绝对索引
+    var currentFocusedIndex by remember {
+        mutableIntStateOf(channels.indexOfFirst { it.id == currentPlaying?.id }.coerceAtLeast(0))
     }
 
-    var currentFocusedIndex by remember { mutableIntStateOf(initialIndex) }
+    // 【保留我们的防闪退锁】
+    var isJumpingPage by remember { mutableStateOf(false) }
 
-    // 【核心魔法 1：动态监听真实可视数量】
-    // 彻底告别写死或猜高度，直接让系统告诉我们当前屏幕到底装了几个！
-    var dynamicJumpStep by remember { mutableIntStateOf(8) }
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.size) {
-        val visibleCount = listState.layoutInfo.visibleItemsInfo.size
-        // 减 1 是为了翻页时保留最后一个频道作为视觉连贯的上下文
-        if (visibleCount > 2) {
-            dynamicJumpStep = visibleCount - 1
-        }
-    }
-
-    // 8秒无操作自动收起
+    // 1. 自动收起逻辑
     LaunchedEffect(userActionTrigger) {
         delay(8000)
         onClose()
     }
 
-    // 呼出时自动定位到当前播放频道
+    // 2. 初始定位
     LaunchedEffect(Unit) {
         if (channels.isNotEmpty()) {
-            listState.scrollToItem(initialIndex)
-            delay(100)
-            focusRequesters[initialIndex]?.requestFocus()
+            tvListState.scrollToItem(currentFocusedIndex, 0)
+            delay(150)
+            focusRequesters[currentFocusedIndex]?.requestFocus()
         }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.1f)) // 最外层极浅遮罩
+            // 【恢复我们的沉浸美学 1】外层极浅遮罩
+            .background(Color.Black.copy(alpha = 0.1f))
             .clickable { onClose() }
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
@@ -252,110 +243,130 @@ fun ChannelListSidebar(
         Column(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(360.dp)
-                // 【核心魔法 2：高通透沉浸式背景】
+                .width(360.dp) // 恢复 Apple TV 优雅比例
+                // 【恢复我们的沉浸美学 2】内层通透的高级半透明
                 .background(Color.Black.copy(alpha = 0.45f))
                 .padding(24.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                        when (event.nativeKeyEvent.keyCode) {
-                            // 【基于真实视角的极速跳页】
-                            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                if (channels.isNotEmpty() && currentFocusedIndex > 0) {
-                                    val target = (currentFocusedIndex - dynamicJumpStep).coerceAtLeast(0)
-                                    coroutineScope.launch {
-                                        listState.scrollToItem(target)
-                                        delay(50)
-                                        focusRequesters[target]?.requestFocus()
+                        // 获取当前可见的列表信息
+                        val layoutInfo = tvListState.layoutInfo
+                        val visibleItems = layoutInfo.visibleItemsInfo
+
+                        if (visibleItems.isNotEmpty()) {
+                            // 【融合对方的核心魔法】：真实计算屏幕跨度
+                            val actualPageSize = (visibleItems.last().index - visibleItems.first().index).coerceAtLeast(1)
+
+                            when (event.nativeKeyEvent.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                    if (isJumpingPage) return@onPreviewKeyEvent true
+                                    if (currentFocusedIndex > 0) {
+                                        isJumpingPage = true
+                                        val target = (currentFocusedIndex - actualPageSize).coerceAtLeast(0)
+                                        coroutineScope.launch {
+                                            tvListState.scrollToItem(target, 0)
+                                            delay(100)
+                                            try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
+                                            isJumpingPage = false
+                                        }
                                     }
+                                    return@onPreviewKeyEvent true
                                 }
-                                return@onPreviewKeyEvent true
-                            }
-                            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                if (channels.isNotEmpty() && currentFocusedIndex < channels.lastIndex) {
-                                    val target = (currentFocusedIndex + dynamicJumpStep).coerceAtMost(channels.lastIndex)
-                                    coroutineScope.launch {
-                                        listState.scrollToItem(target)
-                                        delay(50)
-                                        focusRequesters[target]?.requestFocus()
+                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                    if (isJumpingPage) return@onPreviewKeyEvent true
+                                    if (currentFocusedIndex < channels.lastIndex) {
+                                        isJumpingPage = true
+                                        val target = (currentFocusedIndex + actualPageSize).coerceAtMost(channels.lastIndex)
+                                        coroutineScope.launch {
+                                            tvListState.scrollToItem(target, 0)
+                                            delay(100)
+                                            try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
+                                            isJumpingPage = false
+                                        }
                                     }
+                                    return@onPreviewKeyEvent true
                                 }
-                                return@onPreviewKeyEvent true
                             }
                         }
                     }
                     false
                 }
         ) {
-            // 动态计算页码指示器
-            val currentPageIndicator = (currentFocusedIndex / dynamicJumpStep) + 1
-            val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / dynamicJumpStep.toFloat()).toInt()
+            // 页码指示器逻辑
+            val visibleItems = tvListState.layoutInfo.visibleItemsInfo
+            val actualPageSize = if (visibleItems.size > 1) visibleItems.last().index - visibleItems.first().index else 8
+            val firstVisible = tvListState.firstVisibleItemIndex
 
+            val currentPage = (firstVisible / actualPageSize) + 1
+            val totalPages = ceil(channels.size.toFloat() / actualPageSize).toInt().coerceAtLeast(1)
+
+            // 头部标题
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Text("$currentPageIndicator / $totalPages", color = Color.LightGray, fontSize = 14.sp)
+                Text("$currentPage / $totalPages", color = Color.LightGray, fontSize = 14.sp)
             }
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            LazyColumn(
-                state = listState,
+            TvLazyColumn(
+                state = tvListState,
                 modifier = Modifier.fillMaxSize(),
+                pivotOffsets = PivotOffsets(parentFraction = 0f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                itemsIndexed(channels) { index, channel ->
+                itemsIndexed(
+                    items = channels,
+                    key = { _, channel -> channel.id }
+                ) { index, channel ->
                     val isPlaying = channel.id == currentPlaying?.id
                     var isFocused by remember { mutableStateOf(false) }
-
                     val requester = focusRequesters.getOrPut(index) { FocusRequester() }
-                    val indexString = String.format("%03d", index + 1)
 
-                    val scale by animateFloatAsState(
-                        targetValue = if (isFocused) 1.05f else 1f,
-                        animationSpec = tween(durationMillis = 150),
-                        label = "scale"
-                    )
+                    val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(150), label = "scale")
 
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            // 【对方的关键点】：固定高度，保证计算精准无误
+                            .height(60.dp)
                             .scale(scale)
                             .shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp))
                             .focusRequester(requester)
-                            .onFocusChanged { state ->
-                                isFocused = state.isFocused
-                                if (state.isFocused) currentFocusedIndex = index
+                            .onFocusChanged {
+                                isFocused = it.isFocused
+                                if (it.isFocused) currentFocusedIndex = index
                             }
                             .focusable()
                             .clickable { onChannelSelected(channel) }
                             .clip(RoundedCornerShape(12.dp))
-                            // 选中时白底黑字，未选中时全透明
+                            // 【恢复沉浸美学 3】：选中白底，未选中全透明
                             .background(if (isFocused) Color.White else Color.Transparent)
-                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.CenterStart
                     ) {
-                        // 【核心魔法 3：笔直左对齐 + 视觉居中偏移】
+                        // 【恢复苹果排版】：笔直左对齐 + 视觉居中偏移
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp), // 整体往右挤一点，达成视觉居中
+                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start // 坚决左对齐，保证序号成一条直线
+                            horizontalArrangement = Arrangement.Start
                         ) {
                             Text(
-                                text = indexString,
+                                text = String.format("%03d", index + 1),
                                 color = if (isFocused) Color.DarkGray else Color.LightGray,
-                                fontSize = 15.sp,
+                                fontSize = 15.sp, // 恢复优雅的字号
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.width(44.dp) // 固定序号宽度，充当强力锚点
+                                modifier = Modifier.width(44.dp) // 恢复强力锚点宽度
                             )
                             Spacer(modifier = Modifier.width(12.dp))
                             Text(
                                 text = channel.name,
                                 color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White),
                                 fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 17.sp,
+                                fontSize = 17.sp, // 恢复优雅的字号
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
