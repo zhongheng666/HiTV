@@ -84,10 +84,31 @@ class PlayerViewModel @Inject constructor(
     var isChannelListVisible by mutableStateOf(false)
     var currentPlayingChannel by mutableStateOf<Channel?>(null)
 
+    // 播放指定频道
     fun playChannel(channel: Channel) {
         currentPlayingChannel = channel
         playerController.play(channel.url)
         isChannelListVisible = false
+    }
+
+    // 快捷换台：下一个频道
+    fun playNextChannel() {
+        val list = allChannels.value
+        if (list.isEmpty() || currentPlayingChannel == null) return
+        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
+        // 如果到底了，就循环回到第一个
+        val nextIndex = if (currentIndex + 1 < list.size) currentIndex + 1 else 0
+        playChannel(list[nextIndex])
+    }
+
+    // 快捷换台：上一个频道
+    fun playPreviousChannel() {
+        val list = allChannels.value
+        if (list.isEmpty() || currentPlayingChannel == null) return
+        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
+        // 如果到顶了，就循环到最后一个
+        val prevIndex = if (currentIndex - 1 >= 0) currentIndex - 1 else list.lastIndex
+        playChannel(list[prevIndex])
     }
 
     override fun onCleared() {
@@ -134,8 +155,22 @@ fun PlayerScreen(
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                            // 侧边栏没打开时，按确认键呼出侧边栏
                             if (!viewModel.isChannelListVisible) {
                                 viewModel.isChannelListVisible = true
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        // 【新增：盲操快捷换台】
+                        KeyEvent.KEYCODE_DPAD_UP -> {
+                            if (!viewModel.isChannelListVisible) {
+                                viewModel.playPreviousChannel() // 向上按，切上一个台
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            if (!viewModel.isChannelListVisible) {
+                                viewModel.playNextChannel() // 向下按，切下一个台
                                 return@onPreviewKeyEvent true
                             }
                         }
@@ -204,21 +239,17 @@ fun ChannelListSidebar(
     val coroutineScope = rememberCoroutineScope()
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
-    // 状态：当前焦点的绝对索引
     var currentFocusedIndex by remember {
         mutableIntStateOf(channels.indexOfFirst { it.id == currentPlaying?.id }.coerceAtLeast(0))
     }
 
-    // 【保留我们的防闪退锁】
     var isJumpingPage by remember { mutableStateOf(false) }
 
-    // 1. 自动收起逻辑
     LaunchedEffect(userActionTrigger) {
         delay(8000)
         onClose()
     }
 
-    // 2. 初始定位
     LaunchedEffect(Unit) {
         if (channels.isNotEmpty()) {
             tvListState.scrollToItem(currentFocusedIndex, 0)
@@ -230,7 +261,6 @@ fun ChannelListSidebar(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // 【恢复我们的沉浸美学 1】外层极浅遮罩
             .background(Color.Black.copy(alpha = 0.1f))
             .clickable { onClose() }
             .onPreviewKeyEvent { event ->
@@ -243,18 +273,15 @@ fun ChannelListSidebar(
         Column(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(360.dp) // 恢复 Apple TV 优雅比例
-                // 【恢复我们的沉浸美学 2】内层通透的高级半透明
+                .width(360.dp)
                 .background(Color.Black.copy(alpha = 0.45f))
                 .padding(24.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                        // 获取当前可见的列表信息
                         val layoutInfo = tvListState.layoutInfo
                         val visibleItems = layoutInfo.visibleItemsInfo
 
                         if (visibleItems.isNotEmpty()) {
-                            // 【融合对方的核心魔法】：真实计算屏幕跨度
                             val actualPageSize = (visibleItems.last().index - visibleItems.first().index).coerceAtLeast(1)
 
                             when (event.nativeKeyEvent.keyCode) {
@@ -292,7 +319,6 @@ fun ChannelListSidebar(
                     false
                 }
         ) {
-            // 页码指示器逻辑
             val visibleItems = tvListState.layoutInfo.visibleItemsInfo
             val actualPageSize = if (visibleItems.size > 1) visibleItems.last().index - visibleItems.first().index else 8
             val firstVisible = tvListState.firstVisibleItemIndex
@@ -300,7 +326,6 @@ fun ChannelListSidebar(
             val currentPage = (firstVisible / actualPageSize) + 1
             val totalPages = ceil(channels.size.toFloat() / actualPageSize).toInt().coerceAtLeast(1)
 
-            // 头部标题
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -331,7 +356,6 @@ fun ChannelListSidebar(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            // 【对方的关键点】：固定高度，保证计算精准无误
                             .height(60.dp)
                             .scale(scale)
                             .shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp))
@@ -340,15 +364,24 @@ fun ChannelListSidebar(
                                 isFocused = it.isFocused
                                 if (it.isFocused) currentFocusedIndex = index
                             }
+                            // 【核心修复：强制拦截遥控器中心按键，保证绝对能够触发换台】
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                                    if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                                        keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
+                                        onChannelSelected(channel)
+                                        return@onPreviewKeyEvent true
+                                    }
+                                }
+                                false
+                            }
                             .focusable()
                             .clickable { onChannelSelected(channel) }
                             .clip(RoundedCornerShape(12.dp))
-                            // 【恢复沉浸美学 3】：选中白底，未选中全透明
                             .background(if (isFocused) Color.White else Color.Transparent)
                             .padding(horizontal = 16.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
-                        // 【恢复苹果排版】：笔直左对齐 + 视觉居中偏移
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -357,16 +390,16 @@ fun ChannelListSidebar(
                             Text(
                                 text = String.format("%03d", index + 1),
                                 color = if (isFocused) Color.DarkGray else Color.LightGray,
-                                fontSize = 15.sp, // 恢复优雅的字号
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.width(44.dp) // 恢复强力锚点宽度
+                                modifier = Modifier.width(44.dp)
                             )
                             Spacer(modifier = Modifier.width(12.dp))
                             Text(
                                 text = channel.name,
                                 color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White),
                                 fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 17.sp, // 恢复优雅的字号
+                                fontSize = 17.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
