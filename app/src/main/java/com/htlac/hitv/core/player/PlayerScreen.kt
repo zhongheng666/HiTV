@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +53,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
-import androidx.compose.foundation.layout.BoxWithConstraints
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.repository.ChannelRepository
 import com.htlac.hitv.core.player.Media3Player
@@ -61,9 +63,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
-import kotlin.math.floor
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.ceil
+import kotlin.math.floor
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
@@ -132,7 +135,6 @@ fun PlayerScreen(
                                 return@onPreviewKeyEvent true
                             }
                         }
-                        // 删除了隐藏面板的快捷键，现在 Debug 面板强制常驻
                     }
                 }
                 false
@@ -149,7 +151,7 @@ fun PlayerScreen(
             }
         )
 
-        // 强制常驻的 Debug 面板
+        // Debug 面板
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -185,6 +187,10 @@ fun PlayerScreen(
     }
 }
 
+/**
+ * 终极版 Apple TV 风格侧边栏
+ * 特性：动态读取真实可视数量跳页、笔直左对齐排版、极致沉浸半透明
+ */
 @Composable
 fun ChannelListSidebar(
     channels: List<Channel>,
@@ -192,19 +198,49 @@ fun ChannelListSidebar(
     onChannelSelected: (Channel) -> Unit,
     onClose: () -> Unit
 ) {
-    var currentPage by remember { mutableIntStateOf(0) }
     var userActionTrigger by remember { mutableIntStateOf(0) }
 
-    // 当用户没有任何按键动作超过 8 秒时，自动收起侧边栏
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+
+    val initialIndex = remember {
+        val idx = channels.indexOfFirst { it.id == currentPlaying?.id }
+        if (idx >= 0) idx else 0
+    }
+
+    var currentFocusedIndex by remember { mutableIntStateOf(initialIndex) }
+
+    // 【核心魔法 1：动态监听真实可视数量】
+    // 彻底告别写死或猜高度，直接让系统告诉我们当前屏幕到底装了几个！
+    var dynamicJumpStep by remember { mutableIntStateOf(8) }
+    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.size) {
+        val visibleCount = listState.layoutInfo.visibleItemsInfo.size
+        // 减 1 是为了翻页时保留最后一个频道作为视觉连贯的上下文
+        if (visibleCount > 2) {
+            dynamicJumpStep = visibleCount - 1
+        }
+    }
+
+    // 8秒无操作自动收起
     LaunchedEffect(userActionTrigger) {
         delay(8000)
         onClose()
     }
 
+    // 呼出时自动定位到当前播放频道
+    LaunchedEffect(Unit) {
+        if (channels.isNotEmpty()) {
+            listState.scrollToItem(initialIndex)
+            delay(100)
+            focusRequesters[initialIndex]?.requestFocus()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f))
+            .background(Color.Black.copy(alpha = 0.1f)) // 最外层极浅遮罩
             .clickable { onClose() }
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
@@ -217,124 +253,112 @@ fun ChannelListSidebar(
             modifier = Modifier
                 .fillMaxHeight()
                 .width(360.dp)
-                .background(Color(0xFF1C1C1E).copy(alpha = 0.98f))
+                // 【核心魔法 2：高通透沉浸式背景】
+                .background(Color.Black.copy(alpha = 0.45f))
                 .padding(24.dp)
-        ) {
-            // ================= 头部区域 =================
-            // 我们需要知道列表占用了多少高度，所以用 BoxWithConstraints 动态测量
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                // 1. 获取屏幕除去内边距后的最大可用高度 (转为 dp 的数值)
-                val availableHeightDp = maxHeight.value
-
-                // 2. 估算每个元素占用的大小：卡片高度大约 52dp，加上间距 8dp，一共约 60dp
-                val itemHeightDp = 60f
-
-                // 3. 头部标题区域大约占用 60dp，所以从总高度里减去
-                val listAvailableHeight = availableHeightDp - 60f
-
-                // 【核心魔法：自动计算当页容量】向下取整，保证绝对不会超出屏幕底部
-                val dynamicPageSize = maxOf(1, floor(listAvailableHeight / itemHeightDp).toInt())
-
-                // 计算总页数和当前页的数据
-                val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / dynamicPageSize.toFloat()).toInt()
-                val pagedChannels = if (channels.isNotEmpty()) {
-                    channels.chunked(dynamicPageSize).getOrNull(currentPage) ?: emptyList()
-                } else {
-                    emptyList()
-                }
-
-                val firstItemFocusRequester = remember { FocusRequester() }
-
-                LaunchedEffect(currentPage) {
-                    delay(50)
-                    try { firstItemFocusRequester.requestFocus() } catch (e: Exception) {}
-                }
-
-                // ================= UI 渲染区 =================
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // 拦截左右键，进行动态翻页
-                        .onPreviewKeyEvent { event ->
-                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                                when (event.nativeKeyEvent.keyCode) {
-                                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                        if (currentPage > 0) currentPage--
-                                        return@onPreviewKeyEvent true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                        if (currentPage < totalPages - 1) currentPage++
-                                        return@onPreviewKeyEvent true
+                .onPreviewKeyEvent { event ->
+                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                        when (event.nativeKeyEvent.keyCode) {
+                            // 【基于真实视角的极速跳页】
+                            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                if (channels.isNotEmpty() && currentFocusedIndex > 0) {
+                                    val target = (currentFocusedIndex - dynamicJumpStep).coerceAtLeast(0)
+                                    coroutineScope.launch {
+                                        listState.scrollToItem(target)
+                                        delay(50)
+                                        focusRequesters[target]?.requestFocus()
                                     }
                                 }
+                                return@onPreviewKeyEvent true
                             }
-                            false
+                            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                if (channels.isNotEmpty() && currentFocusedIndex < channels.lastIndex) {
+                                    val target = (currentFocusedIndex + dynamicJumpStep).coerceAtMost(channels.lastIndex)
+                                    coroutineScope.launch {
+                                        listState.scrollToItem(target)
+                                        delay(50)
+                                        focusRequesters[target]?.requestFocus()
+                                    }
+                                }
+                                return@onPreviewKeyEvent true
+                            }
                         }
-                ) {
-                    // 标题和页码
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                        Text("${currentPage + 1} / $totalPages", color = Color.Gray, fontSize = 14.sp)
                     }
+                    false
+                }
+        ) {
+            // 动态计算页码指示器
+            val currentPageIndicator = (currentFocusedIndex / dynamicJumpStep) + 1
+            val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / dynamicJumpStep.toFloat()).toInt()
 
-                    Spacer(modifier = Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text("$currentPageIndicator / $totalPages", color = Color.LightGray, fontSize = 14.sp)
+            }
 
-                    // 动态列表
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        itemsIndexed(pagedChannels) { index, channel ->
-                            val globalIndex = (currentPage * dynamicPageSize) + index + 1
-                            val indexString = String.format("%03d", globalIndex)
+            Spacer(modifier = Modifier.height(20.dp))
 
-                            val isPlaying = channel.id == currentPlaying?.id
-                            var isFocused by remember { mutableStateOf(false) }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(channels) { index, channel ->
+                    val isPlaying = channel.id == currentPlaying?.id
+                    var isFocused by remember { mutableStateOf(false) }
 
-                            val modifier = if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier
+                    val requester = focusRequesters.getOrPut(index) { FocusRequester() }
+                    val indexString = String.format("%03d", index + 1)
 
-                            val scale by animateFloatAsState(
-                                targetValue = if (isFocused) 1.05f else 1f,
-                                animationSpec = tween(durationMillis = 150),
-                                label = "scale"
-                            )
+                    val scale by animateFloatAsState(
+                        targetValue = if (isFocused) 1.05f else 1f,
+                        animationSpec = tween(durationMillis = 150),
+                        label = "scale"
+                    )
 
-                            Box(
-                                modifier = modifier
-                                    .fillMaxWidth()
-                                    .scale(scale)
-                                    .shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp))
-                                    .onFocusChanged { isFocused = it.isFocused }
-                                    .focusable()
-                                    .clickable { onChannelSelected(channel) }
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isFocused) Color.White else Color(0xFF2C2C2E))
-                                    // 稍微缩小一点上下内边距，让排版更紧凑
-                                    .padding(horizontal = 16.dp, vertical = 14.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = indexString,
-                                        color = if (isFocused) Color.DarkGray else Color.Gray,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.width(40.dp)
-                                    )
-
-                                    Text(
-                                        text = channel.name,
-                                        color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White),
-                                        fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 16.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .scale(scale)
+                            .shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp))
+                            .focusRequester(requester)
+                            .onFocusChanged { state ->
+                                isFocused = state.isFocused
+                                if (state.isFocused) currentFocusedIndex = index
                             }
+                            .focusable()
+                            .clickable { onChannelSelected(channel) }
+                            .clip(RoundedCornerShape(12.dp))
+                            // 选中时白底黑字，未选中时全透明
+                            .background(if (isFocused) Color.White else Color.Transparent)
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                    ) {
+                        // 【核心魔法 3：笔直左对齐 + 视觉居中偏移】
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp), // 整体往右挤一点，达成视觉居中
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start // 坚决左对齐，保证序号成一条直线
+                        ) {
+                            Text(
+                                text = indexString,
+                                color = if (isFocused) Color.DarkGray else Color.LightGray,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(44.dp) // 固定序号宽度，充当强力锚点
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = channel.name,
+                                color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White),
+                                fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 17.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
