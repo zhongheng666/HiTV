@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -13,65 +14,106 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// 使用 Kotlin 委托属性，在 Context 上挂载一个全局唯一的 DataStore 实例
+// 使用 Kotlin 委托属性在顶层创建 DataStore 单例
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "hitv_settings")
 
-@Singleton // 保证全局只有这一个配置管家
+@Singleton
 class SettingsManager @Inject constructor(
-    @param:ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context
 ) {
-    // 像字典一样，定义我们要存的数据的“钥匙 (Key)”
+    // 定义所有的存储 Key
     companion object {
-        val IPTV_URL_KEY = stringPreferencesKey("iptv_url")
-        val EPG_URL_KEY = stringPreferencesKey("epg_url")
-        // 设计文档 4.1 要求的防御性设置
-        val FORCE_SOFT_AUDIO_KEY = booleanPreferencesKey("force_soft_audio")
-        // 设计文档 6 要求的备用播放器共存
-        val USE_MPV_KEY = booleanPreferencesKey("use_mpv")
+        val IPTV_URL = stringPreferencesKey("iptv_url")
+        val EPG_URL = stringPreferencesKey("epg_url")
+        val USE_MPV = booleanPreferencesKey("use_mpv")
+        val FORCE_SOFT_AUDIO = booleanPreferencesKey("force_soft_audio")
+
+        // 历史记录 Keys (使用 StringSet 保存多个源)
+        val IPTV_HISTORY = stringSetPreferencesKey("iptv_history")
+        val EPG_HISTORY = stringSetPreferencesKey("epg_history")
     }
 
-    // ================== IPTV 源地址 ==================
-    // 供 UI 监听，只要源地址一变，UI 立马知道
+    // ================= 读取数据流 (Flow) =================
+
     val iptvUrlFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[IPTV_URL_KEY] ?: "" // 默认返回空字符串
+        preferences[IPTV_URL] ?: ""
     }
+
+    val epgUrlFlow: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[EPG_URL] ?: ""
+    }
+
+    val useMpvFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[USE_MPV] ?: false
+    }
+
+    val forceSoftAudioFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[FORCE_SOFT_AUDIO] ?: false
+    }
+
+    /**
+     * 暴露 IPTV 历史记录流
+     * 如果当前配置的 URL 不在历史中，也将其合并进去，确保当前源一定可见
+     */
+    val iptvHistoryFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        val history = preferences[IPTV_HISTORY] ?: emptySet()
+        val current = preferences[IPTV_URL] ?: ""
+        if (current.isNotBlank()) history + current else history
+    }
+
+    /**
+     * 暴露 EPG 历史记录流
+     */
+    val epgHistoryFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        val history = preferences[EPG_HISTORY] ?: emptySet()
+        val current = preferences[EPG_URL] ?: ""
+        if (current.isNotBlank()) history + current else history
+    }
+
+    // ================= 写入数据 (Suspend) =================
 
     suspend fun saveIptvUrl(url: String) {
         context.dataStore.edit { preferences ->
-            preferences[IPTV_URL_KEY] = url
+            preferences[IPTV_URL] = url
+            // 同步保存到历史记录中
+            if (url.isNotBlank()) {
+                val currentHistory = preferences[IPTV_HISTORY] ?: emptySet()
+                // DataStore 规定：必须创建一个新的 Set 进行赋值，不能直接修改原 Set
+                preferences[IPTV_HISTORY] = currentHistory + url
+            }
         }
-    }
-
-    // ================== EPG 源地址 ==================
-    val epgUrlFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[EPG_URL_KEY] ?: ""
     }
 
     suspend fun saveEpgUrl(url: String) {
         context.dataStore.edit { preferences ->
-            preferences[EPG_URL_KEY] = url
+            preferences[EPG_URL] = url
+            // 同步保存到历史记录中
+            if (url.isNotBlank()) {
+                val currentHistory = preferences[EPG_HISTORY] ?: emptySet()
+                preferences[EPG_HISTORY] = currentHistory + url
+            }
         }
-    }
-
-    // ================== 强制音频软解开关 ==================
-    val forceSoftAudioFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[FORCE_SOFT_AUDIO_KEY] ?: false // 默认关闭
-    }
-
-    suspend fun setForceSoftAudio(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[FORCE_SOFT_AUDIO_KEY] = enabled
-        }
-    }
-
-    // ================== MPV 备用播放器开关 ==================
-    val useMpvFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[USE_MPV_KEY] ?: false // 默认关闭，也就是默认使用 Media3
     }
 
     suspend fun setUseMpv(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[USE_MPV_KEY] = enabled
+            preferences[USE_MPV] = enabled
+        }
+    }
+
+    suspend fun setForceSoftAudio(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[FORCE_SOFT_AUDIO] = enabled
+        }
+    }
+
+    /**
+     * 清理所有历史记录（预留的高级管理接口）
+     */
+    suspend fun clearAllHistory() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(IPTV_HISTORY)
+            preferences.remove(EPG_HISTORY)
         }
     }
 }

@@ -30,7 +30,6 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var ntpManager: NtpManager
 
-    // 新增：把本地配置大管家请进来，用来读取有没有存过地址
     @Inject
     lateinit var settingsManager: SettingsManager
 
@@ -48,51 +47,48 @@ class MainActivity : ComponentActivity() {
             ) {
                 val navController = rememberNavController()
 
-                // 把大管家的起点改成一个隐藏的 "splash"
                 NavHost(
                     navController = navController,
                     startDestination = "splash"
                 ) {
-
-                    // ================= 启动路由分发页 =================
                     composable("splash") {
-                        // 读取本地保存的 IPTV 地址（initial=null 表示还在读取的这几毫秒中）
                         val savedUrl by settingsManager.iptvUrlFlow.collectAsState(initial = null)
-
                         LaunchedEffect(savedUrl) {
                             if (savedUrl != null) {
                                 if (savedUrl!!.isNotBlank()) {
-                                    // 智能分发：有数据，直接跳去播放页！
                                     navController.navigate("player") {
                                         popUpTo("splash") { inclusive = true }
                                     }
                                 } else {
-                                    // 智能分发：没数据，老老实实去设置页
                                     navController.navigate("settings") {
                                         popUpTo("splash") { inclusive = true }
                                     }
                                 }
                             }
                         }
-
-                        // 读取这几毫秒时的纯黑占位背景，完美无缝衔接
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black))
                     }
 
-                    // ================= 配置页 =================
                     composable("settings") {
                         SettingsScreen(
                             onNavigateToPlayer = {
                                 navController.navigate("player") {
+                                    // 扫码配置完后，清空栈跳到播放页
                                     popUpTo("settings") { inclusive = true }
                                 }
                             }
                         )
                     }
 
-                    // ================= 播放页 =================
                     composable("player") {
-                        com.htlac.hitv.feature.player.PlayerScreen()
+                        // 【核心修改：传入跳转设置页的回调】
+                        com.htlac.hitv.feature.player.PlayerScreen(
+                            onNavigateToSettings = {
+                                navController.navigate("settings") {
+                                    popUpTo("player") { inclusive = true }
+                                }
+                            }
+                        )
                     }
                 }
             }
