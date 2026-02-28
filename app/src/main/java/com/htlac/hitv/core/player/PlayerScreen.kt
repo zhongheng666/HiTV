@@ -111,7 +111,6 @@ fun PlayerScreen(
         }
     }
 
-    // 保留系统级返回键监听作为兜底
     BackHandler(enabled = viewModel.isChannelListVisible || viewModel.isAdvancedSettingsVisible) {
         if (viewModel.isAdvancedSettingsVisible) viewModel.isAdvancedSettingsVisible = false
         else if (viewModel.isChannelListVisible) viewModel.isChannelListVisible = false
@@ -129,7 +128,6 @@ fun PlayerScreen(
 
                 if (viewModel.isSyncing) return@onPreviewKeyEvent true
 
-                // 1. 处理数字按键 (在按下时捕获)
                 if (action == KeyEvent.ACTION_DOWN) {
                     val digit = when (keyCode) {
                         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
@@ -142,10 +140,8 @@ fun PlayerScreen(
                     }
                 }
 
-                // 2. 纯净状态下的核心按键逻辑 (不在菜单中)
                 if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
 
-                    // 【修复 1：互斥处理确认键，解决弹出列表 Bug】
                     if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (action == KeyEvent.ACTION_DOWN) {
                             if (event.nativeKeyEvent.repeatCount > 0 && !isLongPressHandled && viewModel.numpadBuffer.isEmpty()) {
@@ -155,10 +151,8 @@ fun PlayerScreen(
                             return@onPreviewKeyEvent true
                         } else if (action == KeyEvent.ACTION_UP) {
                             if (viewModel.numpadBuffer.isNotEmpty()) {
-                                // 如果缓冲有数字，直接确认换台！绝不打开列表！
                                 viewModel.executeNumpadSwitch()
                             } else if (!isLongPressHandled) {
-                                // 只有没按数字、没触发长按时，才拉出频道列表！
                                 viewModel.isChannelListVisible = true
                             }
                             isLongPressHandled = false
@@ -166,7 +160,6 @@ fun PlayerScreen(
                         }
                     }
 
-                    // 上下左右方向键处理
                     if (action == KeyEvent.ACTION_DOWN && viewModel.numpadBuffer.isEmpty()) {
                         when (keyCode) {
                             KeyEvent.KEYCODE_DPAD_UP -> { viewModel.playPreviousChannel(); return@onPreviewKeyEvent true }
@@ -206,15 +199,38 @@ fun PlayerScreen(
             }
         }
 
-        Box(
-            modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(0.7f), RoundedCornerShape(8.dp)).padding(16.dp)
-        ) {
-            Text("🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo", color = Color(0xFF00FF00), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        // 【新增：独立的时间显示组件】
+        if (viewModel.showClock && !viewModel.isSyncing) {
+            var currentTimeString by remember { mutableStateOf("") }
+            LaunchedEffect(Unit) {
+                val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+                while (true) {
+                    currentTimeString = formatter.format(Date())
+                    delay(1000)
+                }
+            }
+            Box(modifier = Modifier.align(Alignment.TopEnd).padding(32.dp)) {
+                Text(
+                    text = currentTimeString,
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
         }
 
-        Box(
-            modifier = Modifier.align(Alignment.TopEnd).padding(48.dp)
-        ) {
+        // 【新增：可控制开关的 Debug 面板】
+        if (viewModel.showDebugPanel) {
+            Box(
+                modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(0.7f), RoundedCornerShape(8.dp)).padding(16.dp)
+            ) {
+                Text("🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo", color = Color(0xFF00FF00), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            }
+        }
+
+        // 数字换台面板 (稍微往下挪，防止遮挡时钟)
+        Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 100.dp, end = 48.dp)) {
             AnimatedVisibility(
                 visible = viewModel.numpadBuffer.isNotEmpty(),
                 enter = fadeIn(tween(150)) + scaleIn(tween(150, delayMillis = 50)),
@@ -259,10 +275,14 @@ fun PlayerScreen(
                 epgHistory = epgHistory.toList(),
                 useMpv = useMpv,
                 forceSoftAudio = forceSoftAudio,
+                showDebugPanel = viewModel.showDebugPanel,
+                showClock = viewModel.showClock,
                 onSwitchIptv = { viewModel.switchIptvSource(it) },
                 onSwitchEpg = { viewModel.switchEpgSource(it) },
                 onToggleMpv = { viewModel.toggleMpv(it) },
                 onToggleSoftAudio = { viewModel.toggleSoftAudio(it) },
+                onToggleDebugPanel = { viewModel.showDebugPanel = it },
+                onToggleClock = { viewModel.showClock = it },
                 onAddNewSource = { viewModel.isAdvancedSettingsVisible = false; onNavigateToSettings() },
                 onClose = { viewModel.isAdvancedSettingsVisible = false }
             )
@@ -278,10 +298,14 @@ fun AdvancedSettingsSidebar(
     epgHistory: List<String>,
     useMpv: Boolean,
     forceSoftAudio: Boolean,
+    showDebugPanel: Boolean,
+    showClock: Boolean,
     onSwitchIptv: (String) -> Unit,
     onSwitchEpg: (String) -> Unit,
     onToggleMpv: (Boolean) -> Unit,
     onToggleSoftAudio: (Boolean) -> Unit,
+    onToggleDebugPanel: (Boolean) -> Unit,
+    onToggleClock: (Boolean) -> Unit,
     onAddNewSource: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -309,7 +333,6 @@ fun AdvancedSettingsSidebar(
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     userActionTrigger++
-                    // 【修复 2】：在焦点最外层拦截返回键，一击必杀！
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ESCAPE) {
                         onClose()
                         return@onPreviewKeyEvent true
@@ -356,6 +379,15 @@ fun AdvancedSettingsSidebar(
                 }
                 item { TvToggleItem("使用 MPV 备用内核", checked = useMpv, onCheckedChange = onToggleMpv) }
                 item { TvToggleItem("强制开启音频软解", checked = forceSoftAudio, onCheckedChange = onToggleSoftAudio) }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+
+                // 【新增：界面显示设置】
+                item {
+                    Text("界面显示设置", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
+                }
+                item { TvToggleItem("显示右上角时钟", checked = showClock, onCheckedChange = onToggleClock) }
+                item { TvToggleItem("显示底层 Debug 探针面板", checked = showDebugPanel, onCheckedChange = onToggleDebugPanel) }
+
                 item { Spacer(modifier = Modifier.height(64.dp)) }
             }
         }
@@ -482,7 +514,6 @@ fun ChannelListSidebar(
                         userActionTrigger++
                         val keyCode = event.nativeKeyEvent.keyCode
 
-                        // 【修复 2】：在焦点最外层拦截返回键，一击必杀强制关闭！
                         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
                             onClose()
                             return@onPreviewKeyEvent true

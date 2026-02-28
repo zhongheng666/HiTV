@@ -36,8 +36,6 @@ class PlayerViewModel @Inject constructor(
 ) : ViewModel() {
 
     val activePlayer = MutableStateFlow<PlayerController>(media3Player)
-
-    // 【核心保存：永远引用这一块画布】
     private var currentSurfaceView: SurfaceView? = null
 
     val allChannels = channelRepository.getAllChannels().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -54,6 +52,10 @@ class PlayerViewModel @Inject constructor(
     var isChannelListVisible by mutableStateOf(false)
     var isAdvancedSettingsVisible by mutableStateOf(false)
     var isSyncing by mutableStateOf(false)
+
+    // 【新增：UI 显示开关状态】
+    var showDebugPanel by mutableStateOf(false)
+    var showClock by mutableStateOf(true)
 
     var currentPlayingChannel by mutableStateOf<Channel?>(null)
     var isEpgVisible by mutableStateOf(false)
@@ -78,23 +80,17 @@ class PlayerViewModel @Inject constructor(
             settingsManager.useMpvFlow.collect { isMpvSelected ->
                 val targetEngine = if (isMpvSelected) mpvPlayer else media3Player
                 if (activePlayer.value != targetEngine) {
-                    // 1. 旧引擎释放画布并挂起
                     activePlayer.value.setSurface(null)
                     activePlayer.value.stop()
-
-                    delay(300) // 给电视硬件喘息时间
-
-                    // 2. 挂载新引擎并分配画布
+                    delay(300)
                     activePlayer.value = targetEngine
                     targetEngine.setSurface(currentSurfaceView)
-
                     currentPlayingChannel?.let { activePlayer.value.play(it.url) }
                 }
             }
         }
     }
 
-    // 【新增：由 UI 层传入永生画布】
     fun setSurface(surfaceView: SurfaceView?) {
         currentSurfaceView = surfaceView
         activePlayer.value.setSurface(surfaceView)

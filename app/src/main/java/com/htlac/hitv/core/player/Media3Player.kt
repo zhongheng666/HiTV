@@ -57,7 +57,6 @@ class Media3Player @Inject constructor(
     private val player: ExoPlayer
     private val httpDataSourceFactory: DefaultHttpDataSource.Factory
 
-    // 自动 Fallback 状态机
     private var currentOriginalUrl = ""
     private var currentFallbackLevel = 0
 
@@ -69,14 +68,14 @@ class Media3Player @Inject constructor(
             .setReadTimeoutMs(5000)
             .setUserAgent(userAgent)
 
-        // 【应用你找到的神级防卡顿缓冲配置】
+        // 【终极防卡顿核心】：扩容内存，提高卡顿恢复的阈值，拒绝频繁闪烁
         val loadControl = DefaultLoadControl.Builder()
-            .setAllocator(DefaultAllocator(true, 16 * 1024))
+            .setAllocator(DefaultAllocator(true, 64 * 1024))
             .setBufferDurationsMs(
                 3000,  // 最少储备 3秒
-                10000, // 最大容纳 10秒
+                20000, // 最大容纳 20秒
                 1500,  // 起播必须有 1.5秒 数据
-                2000   // 卡顿后必须攒够 2秒 数据才恢复播放！(解决频繁 BUFFERING 闪烁的核心)
+                2000   // 卡顿后必须攒够 2秒 数据才恢复播放！
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -184,11 +183,18 @@ class Media3Player @Inject constructor(
         player.clearMediaItems()
         Log.e(TAG, "=========================================")
 
+        // 【直播边缘防饥饿配置】：强迫 ExoPlayer 落后直播边缘 12 秒，手里永远捏着存货
+        val liveConfig = MediaItem.LiveConfiguration.Builder()
+            .setTargetOffsetMs(12000)
+            .setMaxPlaybackSpeed(1.02f)
+            .build()
+
         val mediaSource = when (level) {
             0 -> {
                 Log.e(TAG, "🚀 [策略 0] 默认智能嗅探模式: $url")
+                val item = MediaItem.Builder().setUri(url).setLiveConfiguration(liveConfig).build()
                 DefaultMediaSourceFactory(httpDataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(url))
+                    .createMediaSource(item)
             }
             1 -> {
                 Log.e(TAG, "🔧 [策略 1] 针对脏流 HLS: 强制关闭无切片准备，允许非 IDR 关键帧起播")
@@ -196,10 +202,11 @@ class Media3Player @Inject constructor(
                     DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES,
                     true
                 )
+                val item = MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).setLiveConfiguration(liveConfig).build()
                 HlsMediaSource.Factory(httpDataSourceFactory)
                     .setExtractorFactory(hlsExtractorFactory)
                     .setAllowChunklessPreparation(false)
-                    .createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+                    .createMediaSource(item)
             }
             2 -> {
                 Log.e(TAG, "🔧 [策略 2] 终极 TS 容错: 强制识别为 MP2T 纯二进制流")
@@ -207,8 +214,9 @@ class Media3Player @Inject constructor(
                     DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
                             DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                 )
+                val item = MediaItem.Builder().setUri(url).setMimeType(MimeTypes.VIDEO_MP2T).setLiveConfiguration(liveConfig).build()
                 DefaultMediaSourceFactory(httpDataSourceFactory, extractorsFactory)
-                    .createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.VIDEO_MP2T).build())
+                    .createMediaSource(item)
             }
             else -> throw IllegalStateException("Unknown fallback level")
         }
