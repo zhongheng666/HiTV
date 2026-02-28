@@ -36,10 +36,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,6 +57,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,6 +65,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
@@ -97,6 +102,28 @@ fun PlayerScreen(
     val context = LocalContext.current
     var isLongPressHandled by remember { mutableStateOf(false) }
 
+    // 【新增功能 1：前后台生命周期感知】
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                // 当按 Home 键切后台，或者进入其他 Activity 时，主动挂起播放器释放硬件资源
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    activeController.pause()
+                }
+                // 切回前台时，恢复播放
+                Lifecycle.Event.ON_RESUME -> {
+                    activeController.resume()
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(Unit) {
         viewModel.epgSyncEvent.collect { message -> Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
@@ -111,9 +138,31 @@ fun PlayerScreen(
         }
     }
 
-    BackHandler(enabled = viewModel.isChannelListVisible || viewModel.isAdvancedSettingsVisible) {
-        if (viewModel.isAdvancedSettingsVisible) viewModel.isAdvancedSettingsVisible = false
-        else if (viewModel.isChannelListVisible) viewModel.isChannelListVisible = false
+    // 【新增功能 2：全局拦截返回键，实现双击退出应用】
+    var backPressedTime by remember { mutableLongStateOf(0L) }
+    BackHandler(enabled = true) { // 强制全局接管返回键
+        if (viewModel.isAdvancedSettingsVisible) {
+            viewModel.isAdvancedSettingsVisible = false
+        } else if (viewModel.isChannelListVisible) {
+            viewModel.isChannelListVisible = false
+        } else {
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - backPressedTime > 2000) {
+                // 如果两次按键间隔大于 2 秒，提示用户
+                backPressedTime = currentTime
+                Toast.makeText(context, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+            } else {
+                // 2 秒内连续按了两次，安全退出 Activity
+                var ctx = context
+                while (ctx is android.content.ContextWrapper) {
+                    if (ctx is android.app.Activity) {
+                        ctx.finish()
+                        break
+                    }
+                    ctx = ctx.baseContext
+                }
+            }
+        }
     }
 
     Box(
@@ -199,7 +248,6 @@ fun PlayerScreen(
             }
         }
 
-        // 【新增：独立的时间显示组件】
         if (viewModel.showClock && !viewModel.isSyncing) {
             var currentTimeString by remember { mutableStateOf("") }
             LaunchedEffect(Unit) {
@@ -220,7 +268,6 @@ fun PlayerScreen(
             }
         }
 
-        // 【新增：可控制开关的 Debug 面板】
         if (viewModel.showDebugPanel) {
             Box(
                 modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(0.7f), RoundedCornerShape(8.dp)).padding(16.dp)
@@ -229,7 +276,6 @@ fun PlayerScreen(
             }
         }
 
-        // 数字换台面板 (稍微往下挪，防止遮挡时钟)
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 100.dp, end = 48.dp)) {
             AnimatedVisibility(
                 visible = viewModel.numpadBuffer.isNotEmpty(),
@@ -381,7 +427,6 @@ fun AdvancedSettingsSidebar(
                 item { TvToggleItem("强制开启音频软解", checked = forceSoftAudio, onCheckedChange = onToggleSoftAudio) }
                 item { Spacer(modifier = Modifier.height(24.dp)) }
 
-                // 【新增：界面显示设置】
                 item {
                     Text("界面显示设置", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
                 }
