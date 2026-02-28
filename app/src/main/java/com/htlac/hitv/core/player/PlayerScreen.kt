@@ -584,4 +584,4 @@ fun EpgBottomCard(channelName: String, currentProgram: EpgProgram?, nextProgram:
             }
         }
     }
-}1
+}

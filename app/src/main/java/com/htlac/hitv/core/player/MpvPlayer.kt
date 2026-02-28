@@ -44,8 +44,8 @@ class MpvPlayer @Inject constructor(
             MPVLib.setOptionString("hwdec-codecs", "all")
 
             MPVLib.setOptionString("cache", "yes")
-            MPVLib.setOptionString("demuxer-max-bytes", "128K")
-            MPVLib.setOptionString("demuxer-max-back-bytes", "512K")
+            MPVLib.setOptionString("demuxer-max-bytes", "2M")
+            MPVLib.setOptionString("demuxer-max-back-bytes", "1M")
             MPVLib.setOptionString("demuxer-readahead-secs", "1")
 
             MPVLib.addObserver(this)

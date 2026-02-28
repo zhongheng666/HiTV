@@ -69,9 +69,15 @@ class Media3Player @Inject constructor(
             .setReadTimeoutMs(5000)
             .setUserAgent(userAgent)
 
+        // 【应用你找到的神级防卡顿缓冲配置】
         val loadControl = DefaultLoadControl.Builder()
             .setAllocator(DefaultAllocator(true, 16 * 1024))
-            .setBufferDurationsMs(1000, 10000, 500, 500)
+            .setBufferDurationsMs(
+                3000,  // 最少储备 3秒
+                10000, // 最大容纳 10秒
+                1500,  // 起播必须有 1.5秒 数据
+                2000   // 卡顿后必须攒够 2秒 数据才恢复播放！(解决频繁 BUFFERING 闪烁的核心)
+            )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
@@ -82,7 +88,6 @@ class Media3Player @Inject constructor(
         player = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
             .build().apply {
-                // 加入官方极其详尽的事件探针，专门用于排查疑难杂症
                 addAnalyticsListener(EventLogger(TAG))
 
                 addAnalyticsListener(object : AnalyticsListener {
@@ -120,7 +125,6 @@ class Media3Player @Inject constructor(
                         updateDebugInfo()
                     }
 
-                    // 【核心：崩溃自愈 Fallback 机制】
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e(TAG, "💀 [Media3] 遇到致命错误: ${error.errorCodeName}", error)
 
@@ -194,7 +198,7 @@ class Media3Player @Inject constructor(
                 )
                 HlsMediaSource.Factory(httpDataSourceFactory)
                     .setExtractorFactory(hlsExtractorFactory)
-                    .setAllowChunklessPreparation(false) // 强制下载真实切片探测格式
+                    .setAllowChunklessPreparation(false)
                     .createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build())
             }
             2 -> {
