@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,6 +65,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
+import com.htlac.hitv.core.player.Media3Player
 import com.htlac.hitv.core.player.PlaybackState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -80,10 +80,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {}
 ) {
-    // 【修复 1】：正确引用 ViewModel 中的 activePlayer
     val activeController by viewModel.activePlayer.collectAsState()
-
-    // 【修复 2】：统一从 activeController 提取状态，去除错误的强转
     val playbackState by activeController.playbackState.collectAsState()
     val errorMessage by activeController.errorMessage.collectAsState()
     val debugInfo by activeController.debugInfo.collectAsState()
@@ -114,6 +111,7 @@ fun PlayerScreen(
         }
     }
 
+    // 保留系统级返回键监听作为兜底
     BackHandler(enabled = viewModel.isChannelListVisible || viewModel.isAdvancedSettingsVisible) {
         if (viewModel.isAdvancedSettingsVisible) viewModel.isAdvancedSettingsVisible = false
         else if (viewModel.isChannelListVisible) viewModel.isChannelListVisible = false
@@ -126,37 +124,41 @@ fun PlayerScreen(
             .focusRequester(rootFocusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
+                val keyCode = event.nativeKeyEvent.keyCode
+                val action = event.nativeKeyEvent.action
+
                 if (viewModel.isSyncing) return@onPreviewKeyEvent true
 
-                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                    val keyCode = event.nativeKeyEvent.keyCode
+                // 1. 处理数字按键 (在按下时捕获)
+                if (action == KeyEvent.ACTION_DOWN) {
                     val digit = when (keyCode) {
                         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
                         in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> (keyCode - KeyEvent.KEYCODE_NUMPAD_0).toString()
                         else -> null
                     }
-
                     if (digit != null) {
                         viewModel.onNumpadInput(digit)
                         return@onPreviewKeyEvent true
                     }
-
-                    if (viewModel.numpadBuffer.isNotEmpty() && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
-                        viewModel.executeNumpadSwitch()
-                        return@onPreviewKeyEvent true
-                    }
                 }
 
-                if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible && viewModel.numpadBuffer.isEmpty()) {
-                    if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
-                        if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                            if (event.nativeKeyEvent.repeatCount > 0 && !isLongPressHandled) {
+                // 2. 纯净状态下的核心按键逻辑 (不在菜单中)
+                if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
+
+                    // 【修复 1：互斥处理确认键，解决弹出列表 Bug】
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                        if (action == KeyEvent.ACTION_DOWN) {
+                            if (event.nativeKeyEvent.repeatCount > 0 && !isLongPressHandled && viewModel.numpadBuffer.isEmpty()) {
                                 isLongPressHandled = true
                                 viewModel.isAdvancedSettingsVisible = true
                             }
                             return@onPreviewKeyEvent true
-                        } else if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) {
-                            if (!isLongPressHandled) {
+                        } else if (action == KeyEvent.ACTION_UP) {
+                            if (viewModel.numpadBuffer.isNotEmpty()) {
+                                // 如果缓冲有数字，直接确认换台！绝不打开列表！
+                                viewModel.executeNumpadSwitch()
+                            } else if (!isLongPressHandled) {
+                                // 只有没按数字、没触发长按时，才拉出频道列表！
                                 viewModel.isChannelListVisible = true
                             }
                             isLongPressHandled = false
@@ -164,8 +166,9 @@ fun PlayerScreen(
                         }
                     }
 
-                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                        when (event.nativeKeyEvent.keyCode) {
+                    // 上下左右方向键处理
+                    if (action == KeyEvent.ACTION_DOWN && viewModel.numpadBuffer.isEmpty()) {
+                        when (keyCode) {
                             KeyEvent.KEYCODE_DPAD_UP -> { viewModel.playPreviousChannel(); return@onPreviewKeyEvent true }
                             KeyEvent.KEYCODE_DPAD_DOWN -> { viewModel.playNextChannel(); return@onPreviewKeyEvent true }
                             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> { viewModel.showEpgCard(); return@onPreviewKeyEvent true }
@@ -176,7 +179,6 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-        // 【修复 3】：去除 ExoPlayer 专用的 PlayerView，统一使用原生的 SurfaceView 并对接 ViewModel
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -283,8 +285,14 @@ fun AdvancedSettingsSidebar(
     onAddNewSource: () -> Unit,
     onClose: () -> Unit
 ) {
+    var userActionTrigger by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(userActionTrigger) {
+        delay(15000)
+        onClose()
+    }
 
     fun formatUrl(url: String): String {
         if (url.isBlank()) return "空"
@@ -297,7 +305,18 @@ fun AdvancedSettingsSidebar(
     }
 
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() },
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }
+            .onPreviewKeyEvent { event ->
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                    userActionTrigger++
+                    // 【修复 2】：在焦点最外层拦截返回键，一击必杀！
+                    if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                        onClose()
+                        return@onPreviewKeyEvent true
+                    }
+                }
+                false
+            },
         contentAlignment = Alignment.CenterEnd
     ) {
         Box(
@@ -317,12 +336,7 @@ fun AdvancedSettingsSidebar(
                 }
                 items(iptvHistory) { url ->
                     val isSelected = url == currentIptv
-                    TvRadioItem(
-                        text = formatUrl(url),
-                        isSelected = isSelected,
-                        onClick = { onSwitchIptv(url) },
-                        modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier
-                    )
+                    TvRadioItem(text = formatUrl(url), isSelected = isSelected, onClick = { onSwitchIptv(url) }, modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
                 }
                 item {
                     TvActionItem("➕ 扫码添加新 IPTV / EPG 源", onClick = onAddNewSource)
@@ -333,11 +347,7 @@ fun AdvancedSettingsSidebar(
                     Text("EPG 节目单源", color = Color(0xFF34C759), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
                 }
                 items(epgHistory) { url ->
-                    TvRadioItem(
-                        text = formatUrl(url),
-                        isSelected = url == currentEpg,
-                        onClick = { onSwitchEpg(url) }
-                    )
+                    TvRadioItem(text = formatUrl(url), isSelected = url == currentEpg, onClick = { onSwitchEpg(url) })
                 }
                 item { Spacer(modifier = Modifier.height(32.dp)) }
 
@@ -470,7 +480,15 @@ fun ChannelListSidebar(
                 modifier = Modifier.fillMaxSize().onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                         userActionTrigger++
-                        when (event.nativeKeyEvent.keyCode) {
+                        val keyCode = event.nativeKeyEvent.keyCode
+
+                        // 【修复 2】：在焦点最外层拦截返回键，一击必杀强制关闭！
+                        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                            onClose()
+                            return@onPreviewKeyEvent true
+                        }
+
+                        when (keyCode) {
                             KeyEvent.KEYCODE_DPAD_UP -> {
                                 if (currentFocusedIndex > 0) currentFocusedIndex--
                                 return@onPreviewKeyEvent true
@@ -566,4 +584,4 @@ fun EpgBottomCard(channelName: String, currentProgram: EpgProgram?, nextProgram:
             }
         }
     }
-}
+}1
