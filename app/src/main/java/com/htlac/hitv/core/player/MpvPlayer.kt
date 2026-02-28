@@ -38,16 +38,15 @@ class MpvPlayer @Inject constructor(
             MPVLib.create(context)
             MPVLib.init()
 
-            // 【核心配置：针对 302 电视流的完美适配】
-            // 1. 强制使用 mediacodec_embed 这个唯一不会导致 Amlogic 崩溃的渲染器
+            // 保持你验证过能出画的最稳配置
             MPVLib.setOptionString("vo", "mediacodec_embed")
             MPVLib.setOptionString("hwdec", "mediacodec")
             MPVLib.setOptionString("hwdec-codecs", "all")
 
-            // 2. 针对 302 流丢失 SPS 关键帧的问题，必须开启缓存！
             MPVLib.setOptionString("cache", "yes")
-            MPVLib.setOptionString("demuxer-max-bytes", "15M") // 存 15M 在内存里
-            MPVLib.setOptionString("demuxer-max-back-bytes", "5M")
+            MPVLib.setOptionString("demuxer-max-bytes", "128K")
+            MPVLib.setOptionString("demuxer-max-back-bytes", "512K")
+            MPVLib.setOptionString("demuxer-readahead-secs", "1")
 
             MPVLib.addObserver(this)
 
@@ -57,7 +56,7 @@ class MpvPlayer @Inject constructor(
             MPVLib.observeProperty("current-vo", 1)
 
             isMpvInitialized = true
-            Log.d(TAG, "✅ [真实MPV内核] 底层 C++ 引擎就绪！")
+            Log.d(TAG, "✅ [真实MPV内核] 底层 C++ 引擎就绪 (极速2M缓存版)！")
         } catch (e: Exception) {
             Log.e(TAG, "❌ [真实MPV内核] 初始化失败！", e)
             _errorMessage.value = "MPV C++ 库加载失败"
@@ -66,16 +65,16 @@ class MpvPlayer @Inject constructor(
 
     private fun updateDebugInfo() {
         val stateStr = when (_playbackState.value) {
-            PlaybackState.BUFFERING -> "缓冲中"
+            PlaybackState.BUFFERING -> "缓冲中(极速加载)"
             PlaybackState.PLAYING -> "暴力输出中"
             PlaybackState.IDLE -> "空闲"
             PlaybackState.ERROR -> "严重错误"
         }
         _debugInfo.value = """
-            内核: 真实 MPV
+            [当前使用内核: 真实 MPV]
             状态: $stateStr
-            渲染: $currentVo
-            硬解: $hwDec
+            渲染模式: $currentVo
+            硬件解码: $hwDec
             视轨: $vCodec
             音轨: $aCodec
         """.trimIndent()
