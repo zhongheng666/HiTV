@@ -1,6 +1,8 @@
 package com.htlac.hitv.feature.player
 
 import android.view.KeyEvent
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -37,7 +39,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -130,7 +131,6 @@ fun PlayerScreen(
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     val keyCode = event.nativeKeyEvent.keyCode
 
-                    // 【新增：拦截 0-9 数字键】
                     val digit = when (keyCode) {
                         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
                         in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> (keyCode - KeyEvent.KEYCODE_NUMPAD_0).toString()
@@ -142,7 +142,6 @@ fun PlayerScreen(
                         return@onPreviewKeyEvent true
                     }
 
-                    // 【新增：如果数字面板存在，按确认键直接无视倒计时，瞬间执行换台】
                     if (viewModel.numpadBuffer.isNotEmpty() && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
                         viewModel.executeNumpadSwitch()
                         return@onPreviewKeyEvent true
@@ -178,12 +177,24 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-        key(activeController) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx -> activeController.getPlayerView(ctx) }
-            )
-        }
+
+        // 【核心修复：永生画布！彻底去除了 key 包裹，SurfaceView 的生命周期与 App 存亡与共！】
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                SurfaceView(ctx).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            viewModel.setSurface(this@apply)
+                        }
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            viewModel.setSurface(null)
+                        }
+                    })
+                }
+            }
+        )
 
         if (viewModel.isSyncing) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.8f)), contentAlignment = Alignment.Center) {
@@ -201,7 +212,6 @@ fun PlayerScreen(
             Text("🛠 播放器 Debug 面板\n\n频道: ${viewModel.currentPlayingChannel?.name ?: "未选择"}\n\n${viewModel.epgDebugInfo}\n\n$debugInfo", color = Color(0xFF00FF00), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
         }
 
-        // 【新增：右上角数字换台提示框】
         Box(
             modifier = Modifier.align(Alignment.TopEnd).padding(48.dp)
         ) {
@@ -213,7 +223,7 @@ fun PlayerScreen(
                 Text(
                     text = viewModel.numpadBuffer,
                     color = Color.White,
-                    fontSize = 64.sp, // 超大字号
+                    fontSize = 64.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(16.dp))
@@ -261,7 +271,7 @@ fun PlayerScreen(
 }
 
 /**
- * 右侧抽屉：高级与多源设置 (使用安全的 LazyColumn 防止闪退)
+ * 右侧抽屉：高级与多源设置
  */
 @Composable
 fun AdvancedSettingsSidebar(
@@ -431,6 +441,7 @@ fun TvActionItem(text: String, onClick: () -> Unit, focusRequester: FocusRequest
 
 /**
  * 【最高保护级别】：严格遵循物理空间测算的极品频道列表！
+ * 使用 Suppress 屏蔽官方的弃用警告，誓死捍卫 TvLazyColumn 的绝对置顶逻辑！
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -499,7 +510,7 @@ fun ChannelListSidebar(
                                     coroutineScope.launch {
                                         tvListState.scrollToItem(safeTarget, 0)
                                         delay(100)
-                                        try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
+                                        try { focusRequesters[safeTarget]?.requestFocus() } catch (e: Exception) {}
                                         isJumpingPage = false
                                     }
                                 }

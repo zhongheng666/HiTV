@@ -1,7 +1,6 @@
 package com.htlac.hitv.core.player
 
-import android.content.Context
-import android.view.View
+import android.view.SurfaceView
 import kotlinx.coroutines.flow.StateFlow
 
 enum class PlaybackState {
@@ -16,10 +15,9 @@ interface PlayerController {
     fun play(url: String)
     fun pause()
     fun resume()
-
-    // 【核心新增：让引擎停止但不销毁，供热切时使用】
     fun stop()
-
     fun release()
-    fun getPlayerView(context: Context): View
+
+    // 【核心架构突变：不再索要 View，而是接受唯一的永生画布】
+    fun setSurface(surfaceView: SurfaceView?)
 }

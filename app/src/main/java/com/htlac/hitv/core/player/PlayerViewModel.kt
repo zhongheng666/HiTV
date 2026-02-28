@@ -1,5 +1,6 @@
 package com.htlac.hitv.feature.player
 
+import android.view.SurfaceView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -36,6 +37,9 @@ class PlayerViewModel @Inject constructor(
 
     val activePlayer = MutableStateFlow<PlayerController>(media3Player)
 
+    // 【核心保存：永远引用这一块画布】
+    private var currentSurfaceView: SurfaceView? = null
+
     val allChannels = channelRepository.getAllChannels().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val epgSyncEvent = epgRepository.epgSyncEvent
 
@@ -58,7 +62,6 @@ class PlayerViewModel @Inject constructor(
     private var epgHideJob: Job? = null
     var epgDebugInfo by mutableStateOf("EPG 状态: 等待加载中...")
 
-    // 【新增：数字换台相关状态】
     var numpadBuffer by mutableStateOf("")
     private var numpadJob: Job? = null
 
@@ -75,44 +78,51 @@ class PlayerViewModel @Inject constructor(
             settingsManager.useMpvFlow.collect { isMpvSelected ->
                 val targetEngine = if (isMpvSelected) mpvPlayer else media3Player
                 if (activePlayer.value != targetEngine) {
+                    // 1. 旧引擎释放画布并挂起
+                    activePlayer.value.setSurface(null)
                     activePlayer.value.stop()
+
+                    delay(300) // 给电视硬件喘息时间
+
+                    // 2. 挂载新引擎并分配画布
                     activePlayer.value = targetEngine
+                    targetEngine.setSurface(currentSurfaceView)
+
                     currentPlayingChannel?.let { activePlayer.value.play(it.url) }
                 }
             }
         }
     }
 
-    // 【新增：接收数字输入】
+    // 【新增：由 UI 层传入永生画布】
+    fun setSurface(surfaceView: SurfaceView?) {
+        currentSurfaceView = surfaceView
+        activePlayer.value.setSurface(surfaceView)
+    }
+
     fun onNumpadInput(digit: String) {
-        // 输入数字时，为了沉浸式体验，自动收起所有的侧边栏
         isChannelListVisible = false
         isAdvancedSettingsVisible = false
-
-        if (numpadBuffer.length >= 4) return // 限制最多输入4位数
+        if (numpadBuffer.length >= 4) return
         numpadBuffer += digit
-
         numpadJob?.cancel()
         numpadJob = viewModelScope.launch {
-            delay(2000) // 停顿 2 秒后自动确认换台
+            delay(2000)
             executeNumpadSwitch()
         }
     }
 
-    // 【新增：执行数字换台逻辑】
     fun executeNumpadSwitch() {
         numpadJob?.cancel()
         val targetNumber = numpadBuffer.toIntOrNull()
-        numpadBuffer = "" // 瞬间清空 UI 显示
-
+        numpadBuffer = ""
         if (targetNumber != null && targetNumber > 0) {
-            val targetIndex = targetNumber - 1 // 现实中的频道 1 对应列表里的 Index 0
+            val targetIndex = targetNumber - 1
             val list = allChannels.value
-
             if (targetIndex in list.indices) {
                 playChannel(list[targetIndex])
             } else {
-                epgDebugInfo = "❌ 频道号 $targetNumber 不存在 (超出范围)"
+                epgDebugInfo = "❌ 频道号 $targetNumber 不存在"
             }
         }
     }
