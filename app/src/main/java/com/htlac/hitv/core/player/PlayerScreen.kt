@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,10 +63,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.PivotOffsets
-import androidx.tv.foundation.lazy.list.TvLazyColumn
-import androidx.tv.foundation.lazy.list.itemsIndexed
-import androidx.tv.foundation.lazy.list.rememberTvLazyListState
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
@@ -83,7 +80,10 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {}
 ) {
+    // 【修复 1】：正确引用 ViewModel 中的 activePlayer
     val activeController by viewModel.activePlayer.collectAsState()
+
+    // 【修复 2】：统一从 activeController 提取状态，去除错误的强转
     val playbackState by activeController.playbackState.collectAsState()
     val errorMessage by activeController.errorMessage.collectAsState()
     val debugInfo by activeController.debugInfo.collectAsState()
@@ -130,7 +130,6 @@ fun PlayerScreen(
 
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     val keyCode = event.nativeKeyEvent.keyCode
-
                     val digit = when (keyCode) {
                         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
                         in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> (keyCode - KeyEvent.KEYCODE_NUMPAD_0).toString()
@@ -148,7 +147,7 @@ fun PlayerScreen(
                     }
                 }
 
-                if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
+                if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible && viewModel.numpadBuffer.isEmpty()) {
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                             if (event.nativeKeyEvent.repeatCount > 0 && !isLongPressHandled) {
@@ -177,8 +176,7 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-
-        // 【核心修复：永生画布！彻底去除了 key 包裹，SurfaceView 的生命周期与 App 存亡与共！】
+        // 【修复 3】：去除 ExoPlayer 专用的 PlayerView，统一使用原生的 SurfaceView 并对接 ViewModel
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -270,9 +268,6 @@ fun PlayerScreen(
     }
 }
 
-/**
- * 右侧抽屉：高级与多源设置
- */
 @Composable
 fun AdvancedSettingsSidebar(
     currentIptv: String,
@@ -288,14 +283,8 @@ fun AdvancedSettingsSidebar(
     onAddNewSource: () -> Unit,
     onClose: () -> Unit
 ) {
-    var userActionTrigger by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(userActionTrigger) {
-        delay(15000)
-        onClose()
-    }
 
     fun formatUrl(url: String): String {
         if (url.isBlank()) return "空"
@@ -308,14 +297,7 @@ fun AdvancedSettingsSidebar(
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.1f))
-            .clickable { onClose() }
-            .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) userActionTrigger++
-                false
-            },
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() },
         contentAlignment = Alignment.CenterEnd
     ) {
         Box(
@@ -335,7 +317,12 @@ fun AdvancedSettingsSidebar(
                 }
                 items(iptvHistory) { url ->
                     val isSelected = url == currentIptv
-                    TvRadioItem(text = formatUrl(url), isSelected = isSelected, onClick = { onSwitchIptv(url) }, modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                    TvRadioItem(
+                        text = formatUrl(url),
+                        isSelected = isSelected,
+                        onClick = { onSwitchIptv(url) },
+                        modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier
+                    )
                 }
                 item {
                     TvActionItem("➕ 扫码添加新 IPTV / EPG 源", onClick = onAddNewSource)
@@ -346,7 +333,11 @@ fun AdvancedSettingsSidebar(
                     Text("EPG 节目单源", color = Color(0xFF34C759), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
                 }
                 items(epgHistory) { url ->
-                    TvRadioItem(text = formatUrl(url), isSelected = url == currentEpg, onClick = { onSwitchEpg(url) })
+                    TvRadioItem(
+                        text = formatUrl(url),
+                        isSelected = url == currentEpg,
+                        onClick = { onSwitchEpg(url) }
+                    )
                 }
                 item { Spacer(modifier = Modifier.height(32.dp)) }
 
@@ -439,11 +430,6 @@ fun TvActionItem(text: String, onClick: () -> Unit, focusRequester: FocusRequest
     }
 }
 
-/**
- * 【最高保护级别】：严格遵循物理空间测算的极品频道列表！
- * 使用 Suppress 屏蔽官方的弃用警告，誓死捍卫 TvLazyColumn 的绝对置顶逻辑！
- */
-@Suppress("DEPRECATION")
 @Composable
 fun ChannelListSidebar(
     channels: List<Channel>,
@@ -452,27 +438,20 @@ fun ChannelListSidebar(
     onClose: () -> Unit
 ) {
     var userActionTrigger by remember { mutableIntStateOf(0) }
-    val tvListState = rememberTvLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
     var currentFocusedIndex by remember {
         mutableIntStateOf(channels.indexOfFirst { it.id == currentPlaying?.id }.coerceAtLeast(0))
     }
 
-    var isJumpingPage by remember { mutableStateOf(false) }
-
     LaunchedEffect(userActionTrigger) { delay(8000); onClose() }
 
-    LaunchedEffect(Unit) {
-        if (channels.isNotEmpty()) {
-            tvListState.scrollToItem(currentFocusedIndex, 0)
-            delay(150)
-            focusRequesters[currentFocusedIndex]?.requestFocus()
-        }
+    LaunchedEffect(currentFocusedIndex) {
+        delay(50)
+        try { focusRequesters[currentFocusedIndex]?.requestFocus() } catch (e: Exception) {}
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }.onPreviewKeyEvent { event -> if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) { userActionTrigger++ }; false }) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }) {
         BoxWithConstraints(
             modifier = Modifier.fillMaxHeight().width(360.dp).background(Color.Black.copy(alpha = 0.45f)).padding(24.dp)
         ) {
@@ -483,36 +462,32 @@ fun ChannelListSidebar(
             val currentPageIndicator = currentPageIndex + 1
             val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / actualPageSize.toFloat()).toInt()
 
+            val startIndex = currentPageIndex * actualPageSize
+            val endIndex = minOf(startIndex + actualPageSize, channels.size)
+            val currentPageChannels = if (channels.isNotEmpty()) channels.subList(startIndex, endIndex) else emptyList()
+
             Column(
                 modifier = Modifier.fillMaxSize().onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                        userActionTrigger++
                         when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_UP -> {
+                                if (currentFocusedIndex > 0) currentFocusedIndex--
+                                return@onPreviewKeyEvent true
+                            }
+                            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                                if (currentFocusedIndex < channels.lastIndex) currentFocusedIndex++
+                                return@onPreviewKeyEvent true
+                            }
                             KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                if (isJumpingPage) return@onPreviewKeyEvent true
                                 if (channels.isNotEmpty() && currentPageIndex > 0) {
-                                    isJumpingPage = true
-                                    val target = (currentPageIndex - 1) * actualPageSize
-                                    coroutineScope.launch {
-                                        tvListState.scrollToItem(target, 0)
-                                        delay(100)
-                                        try { focusRequesters[target]?.requestFocus() } catch (e: Exception) {}
-                                        isJumpingPage = false
-                                    }
+                                    currentFocusedIndex = (currentPageIndex - 1) * actualPageSize
                                 }
                                 return@onPreviewKeyEvent true
                             }
                             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                if (isJumpingPage) return@onPreviewKeyEvent true
                                 if (channels.isNotEmpty() && currentPageIndex < totalPages - 1) {
-                                    isJumpingPage = true
-                                    val target = (currentPageIndex + 1) * actualPageSize
-                                    val safeTarget = target.coerceAtMost(channels.lastIndex)
-                                    coroutineScope.launch {
-                                        tvListState.scrollToItem(safeTarget, 0)
-                                        delay(100)
-                                        try { focusRequesters[safeTarget]?.requestFocus() } catch (e: Exception) {}
-                                        isJumpingPage = false
-                                    }
+                                    currentFocusedIndex = (currentPageIndex + 1) * actualPageSize
                                 }
                                 return@onPreviewKeyEvent true
                             }
@@ -528,18 +503,19 @@ fun ChannelListSidebar(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                TvLazyColumn(state = tvListState, modifier = Modifier.fillMaxSize(), pivotOffsets = PivotOffsets(parentFraction = 0f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    itemsIndexed(items = channels, key = { _, channel -> channel.id }) { index, channel ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    currentPageChannels.forEachIndexed { indexOnPage, channel ->
+                        val globalIndex = startIndex + indexOnPage
                         val isPlaying = channel.id == currentPlaying?.id
-                        var isFocused by remember { mutableStateOf(false) }
-                        val requester = focusRequesters.getOrPut(index) { FocusRequester() }
-                        val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(150), label = "scale")
+                        val isFocused = globalIndex == currentFocusedIndex
+                        val requester = focusRequesters.getOrPut(globalIndex) { FocusRequester() }
+                        val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(100), label = "scale")
 
                         Box(
                             modifier = Modifier.fillMaxWidth()
                                 .height(60.dp)
                                 .scale(scale).shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp)).focusRequester(requester)
-                                .onFocusChanged { isFocused = it.isFocused; if (it.isFocused) currentFocusedIndex = index }
+                                .onFocusChanged { if (it.isFocused) currentFocusedIndex = globalIndex }
                                 .onPreviewKeyEvent { keyEvent ->
                                     if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                                         if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
@@ -552,7 +528,7 @@ fun ChannelListSidebar(
                             contentAlignment = Alignment.CenterStart
                         ) {
                             Row(modifier = Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Start) {
-                                Text(String.format("%03d", index + 1), color = if (isFocused) Color.DarkGray else Color.LightGray, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(44.dp))
+                                Text(String.format("%03d", globalIndex + 1), color = if (isFocused) Color.DarkGray else Color.LightGray, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(44.dp))
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(channel.name, color = if (isFocused) Color.Black else (if (isPlaying) Color(0xFF0A84FF) else Color.White), fontWeight = if (isFocused || isPlaying) FontWeight.Bold else FontWeight.Normal, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
