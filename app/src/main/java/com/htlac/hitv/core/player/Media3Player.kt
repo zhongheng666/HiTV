@@ -54,7 +54,8 @@ class Media3Player @Inject constructor(
     private var videoCodecInfo = "未知"
     private var realUrl = "追踪中..."
 
-    private val player: ExoPlayer
+    // 【核心改造 1】：公开 exoPlayer 实例，让外部能够获取它并注入到 PlayerView 中，解决 0x0 黑屏问题！
+    val exoPlayer: ExoPlayer
     private val httpDataSourceFactory: DefaultHttpDataSource.Factory
 
     private var currentOriginalUrl = ""
@@ -68,15 +69,9 @@ class Media3Player @Inject constructor(
             .setReadTimeoutMs(5000)
             .setUserAgent(userAgent)
 
-        // 【终极防卡顿核心】：扩容内存，提高卡顿恢复的阈值，拒绝频繁闪烁
         val loadControl = DefaultLoadControl.Builder()
             .setAllocator(DefaultAllocator(true, 64 * 1024))
-            .setBufferDurationsMs(
-                3000,  // 最少储备 3秒
-                20000, // 最大容纳 20秒
-                1500,  // 起播必须有 1.5秒 数据
-                2000   // 卡顿后必须攒够 2秒 数据才恢复播放！
-            )
+            .setBufferDurationsMs(3000, 20000, 1500, 2000)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
@@ -84,7 +79,8 @@ class Media3Player @Inject constructor(
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
             .setEnableDecoderFallback(true)
 
-        player = ExoPlayer.Builder(context, renderersFactory)
+        // 终生只初始化一次，坚决不 release 防止僵尸死锁
+        exoPlayer = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
             .build().apply {
                 addAnalyticsListener(EventLogger(TAG))
@@ -97,17 +93,14 @@ class Media3Player @Inject constructor(
                             updateDebugInfo()
                         }
                     }
-
                     override fun onVideoSizeChanged(eventTime: AnalyticsListener.EventTime, videoSize: VideoSize) {
                         currentResolution = "${videoSize.width} x ${videoSize.height}"
                         updateDebugInfo()
                     }
-
                     override fun onVideoDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
                         currentDecoder = decoderName
                         updateDebugInfo()
                     }
-
                     override fun onVideoInputFormatChanged(eventTime: AnalyticsListener.EventTime, format: Format, decoderReuseEvaluation: DecoderReuseEvaluation?) {
                         videoCodecInfo = "${format.sampleMimeType} (${format.codecs ?: "N/A"})"
                         updateDebugInfo()
@@ -126,7 +119,6 @@ class Media3Player @Inject constructor(
 
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e(TAG, "💀 [Media3] 遇到致命错误: ${error.errorCodeName}", error)
-
                         if (currentFallbackLevel < 2) {
                             currentFallbackLevel++
                             Log.e(TAG, "🔄 触发自动 Fallback 降级容错 -> 进入策略 $currentFallbackLevel")
@@ -149,7 +141,7 @@ class Media3Player @Inject constructor(
             PlaybackState.IDLE -> "空闲"
             PlaybackState.ERROR -> "播放失败"
         }
-        val dropped = player.videoDecoderCounters?.droppedBufferCount ?: 0
+        val dropped = exoPlayer.videoDecoderCounters?.droppedBufferCount ?: 0
         _debugInfo.value = """
             内核: ExoPlayer (策略 $currentFallbackLevel)
             状态: $stateStr
@@ -161,10 +153,8 @@ class Media3Player @Inject constructor(
         """.trimIndent()
     }
 
-    override fun setSurface(surfaceView: SurfaceView?) {
-        if (surfaceView != null) player.setVideoSurfaceView(surfaceView)
-        else player.clearVideoSurface()
-    }
+    // 交给 Compose 的 PlayerView 去管理画布，不再手动设置
+    override fun setSurface(surfaceView: SurfaceView?) {}
 
     override fun play(url: String) {
         currentOriginalUrl = url
@@ -179,61 +169,50 @@ class Media3Player @Inject constructor(
         videoCodecInfo = "探测中..."
         updateDebugInfo()
 
-        player.stop()
-        player.clearMediaItems()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
         Log.e(TAG, "=========================================")
-
-        // 【直播边缘防饥饿配置】：强迫 ExoPlayer 落后直播边缘 12 秒，手里永远捏着存货
-        val liveConfig = MediaItem.LiveConfiguration.Builder()
-            .setTargetOffsetMs(12000)
-            .setMaxPlaybackSpeed(1.02f)
-            .build()
 
         val mediaSource = when (level) {
             0 -> {
                 Log.e(TAG, "🚀 [策略 0] 默认智能嗅探模式: $url")
-                val item = MediaItem.Builder().setUri(url).setLiveConfiguration(liveConfig).build()
-                DefaultMediaSourceFactory(httpDataSourceFactory)
-                    .createMediaSource(item)
+                DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(MediaItem.fromUri(url))
             }
             1 -> {
                 Log.e(TAG, "🔧 [策略 1] 针对脏流 HLS: 强制关闭无切片准备，允许非 IDR 关键帧起播")
-                val hlsExtractorFactory = DefaultHlsExtractorFactory(
-                    DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES,
-                    true
-                )
-                val item = MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).setLiveConfiguration(liveConfig).build()
+                val hlsExtractorFactory = DefaultHlsExtractorFactory(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES, true)
                 HlsMediaSource.Factory(httpDataSourceFactory)
                     .setExtractorFactory(hlsExtractorFactory)
                     .setAllowChunklessPreparation(false)
-                    .createMediaSource(item)
+                    .createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build())
             }
             2 -> {
                 Log.e(TAG, "🔧 [策略 2] 终极 TS 容错: 强制识别为 MP2T 纯二进制流")
                 val extractorsFactory = DefaultExtractorsFactory().setTsExtractorFlags(
-                    DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
-                            DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+                    DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                 )
-                val item = MediaItem.Builder().setUri(url).setMimeType(MimeTypes.VIDEO_MP2T).setLiveConfiguration(liveConfig).build()
                 DefaultMediaSourceFactory(httpDataSourceFactory, extractorsFactory)
-                    .createMediaSource(item)
+                    .createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.VIDEO_MP2T).build())
             }
             else -> throw IllegalStateException("Unknown fallback level")
         }
 
-        player.setMediaSource(mediaSource)
-        player.prepare()
-        player.playWhenReady = true
+        exoPlayer.setMediaSource(mediaSource)
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
     }
 
-    override fun pause() { player.pause() }
-    override fun resume() { player.play() }
+    override fun pause() { exoPlayer.pause() }
+    override fun resume() { exoPlayer.play() }
 
     override fun stop() {
-        player.stop()
-        player.clearMediaItems()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
         _playbackState.value = PlaybackState.IDLE
     }
 
-    override fun release() { player.release() }
+    override fun release() {
+        Log.d(TAG, "⏹ [Media3] 清空播放队列以释放资源")
+        stop()
+    }
 }

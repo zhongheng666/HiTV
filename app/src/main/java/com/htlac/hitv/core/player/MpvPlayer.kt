@@ -38,15 +38,14 @@ class MpvPlayer @Inject constructor(
             MPVLib.create(context)
             MPVLib.init()
 
-            // 保持你验证过能出画的最稳配置
+            // 【核心修复】：绝对不能用 gpu，回归你最初测试过的能出画的神级组合！
             MPVLib.setOptionString("vo", "mediacodec_embed")
             MPVLib.setOptionString("hwdec", "mediacodec")
             MPVLib.setOptionString("hwdec-codecs", "all")
 
             MPVLib.setOptionString("cache", "yes")
-            MPVLib.setOptionString("demuxer-max-bytes", "2M")
-            MPVLib.setOptionString("demuxer-max-back-bytes", "1M")
-            MPVLib.setOptionString("demuxer-readahead-secs", "1")
+            MPVLib.setOptionString("demuxer-max-bytes", "1M")
+            MPVLib.setOptionString("demuxer-max-back-bytes", "512K")
 
             MPVLib.addObserver(this)
 
@@ -56,7 +55,7 @@ class MpvPlayer @Inject constructor(
             MPVLib.observeProperty("current-vo", 1)
 
             isMpvInitialized = true
-            Log.d(TAG, "✅ [真实MPV内核] 底层 C++ 引擎就绪 (极速2M缓存版)！")
+            Log.d(TAG, "✅ [真实MPV内核] 底层 C++ 引擎就绪！")
         } catch (e: Exception) {
             Log.e(TAG, "❌ [真实MPV内核] 初始化失败！", e)
             _errorMessage.value = "MPV C++ 库加载失败"
@@ -65,7 +64,7 @@ class MpvPlayer @Inject constructor(
 
     private fun updateDebugInfo() {
         val stateStr = when (_playbackState.value) {
-            PlaybackState.BUFFERING -> "缓冲中(极速加载)"
+            PlaybackState.BUFFERING -> "极速缓冲中..."
             PlaybackState.PLAYING -> "暴力输出中"
             PlaybackState.IDLE -> "空闲"
             PlaybackState.ERROR -> "严重错误"
@@ -104,6 +103,10 @@ class MpvPlayer @Inject constructor(
         Log.e(TAG, "=========================================")
         Log.e(TAG, "🚀 [真实MPV] 暴力加载: $url")
         MPVLib.command(arrayOf("stop"))
+
+        // 【核心修复】：粉碎暂停记忆！换台时必须主动取消暂停，否则永远卡第一帧！
+        MPVLib.setPropertyBoolean("pause", false)
+
         MPVLib.command(arrayOf("loadfile", url))
     }
 
@@ -116,7 +119,10 @@ class MpvPlayer @Inject constructor(
         _playbackState.value = PlaybackState.IDLE
     }
 
-    override fun release() { stop() }
+    override fun release() {
+        Log.d(TAG, "⏹ [真实MPV] 进入后台/退出，清空播放队列以释放资源")
+        stop()
+    }
 
     override fun eventProperty(property: String, value: String) {
         when (property) {

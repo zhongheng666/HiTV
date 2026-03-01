@@ -71,6 +71,7 @@ import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
 import com.htlac.hitv.core.player.Media3Player
+import com.htlac.hitv.core.player.MpvPlayer
 import com.htlac.hitv.core.player.PlaybackState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -102,26 +103,17 @@ fun PlayerScreen(
     val context = LocalContext.current
     var isLongPressHandled by remember { mutableStateOf(false) }
 
-    // 【新增功能 1：前后台生命周期感知】
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                // 当按 Home 键切后台，或者进入其他 Activity 时，主动挂起播放器释放硬件资源
-                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
-                    activeController.pause()
-                }
-                // 切回前台时，恢复播放
-                Lifecycle.Event.ON_RESUME -> {
-                    activeController.resume()
-                }
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> activeController.pause()
+                Lifecycle.Event.ON_RESUME -> activeController.resume()
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(Unit) {
@@ -138,9 +130,8 @@ fun PlayerScreen(
         }
     }
 
-    // 【新增功能 2：全局拦截返回键，实现双击退出应用】
     var backPressedTime by remember { mutableLongStateOf(0L) }
-    BackHandler(enabled = true) { // 强制全局接管返回键
+    BackHandler(enabled = true) {
         if (viewModel.isAdvancedSettingsVisible) {
             viewModel.isAdvancedSettingsVisible = false
         } else if (viewModel.isChannelListVisible) {
@@ -148,11 +139,9 @@ fun PlayerScreen(
         } else {
             val currentTime = System.currentTimeMillis()
             if (currentTime - backPressedTime > 2000) {
-                // 如果两次按键间隔大于 2 秒，提示用户
                 backPressedTime = currentTime
                 Toast.makeText(context, "再按一次退出应用", Toast.LENGTH_SHORT).show()
             } else {
-                // 2 秒内连续按了两次，安全退出 Activity
                 var ctx = context
                 while (ctx is android.content.ContextWrapper) {
                     if (ctx is android.app.Activity) {
@@ -221,22 +210,43 @@ fun PlayerScreen(
             },
         contentAlignment = Alignment.Center
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                SurfaceView(ctx).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            viewModel.setSurface(this@apply)
+
+        // 【核心解耦且绝对安全】：使用 when 结合 Kotlin 智能类型转换 (Smart Cast)
+        when (val player = activeController) {
+            is MpvPlayer -> {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        SurfaceView(ctx).apply {
+                            holder.addCallback(object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                    viewModel.setSurface(this@apply)
+                                }
+                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                    viewModel.setSurface(null)
+                                }
+                            })
                         }
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            viewModel.setSurface(null)
-                        }
-                    })
-                }
+                    }
+                )
             }
-        )
+            is Media3Player -> {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        androidx.media3.ui.PlayerView(ctx).apply {
+                            useController = false
+                            // 此处的 player 已经被 Kotlin 智能转换并锁定为 Media3Player，绝不崩溃！
+                            this.player = player.exoPlayer
+                        }
+                    },
+                    update = { view ->
+                        view.player = player.exoPlayer
+                    }
+                )
+            }
+        }
 
         if (viewModel.isSyncing) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.8f)), contentAlignment = Alignment.Center) {
