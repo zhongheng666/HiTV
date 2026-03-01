@@ -40,6 +40,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -211,7 +212,6 @@ fun PlayerScreen(
         contentAlignment = Alignment.Center
     ) {
 
-        // 【核心解耦且绝对安全】：使用 when 结合 Kotlin 智能类型转换 (Smart Cast)
         when (val player = activeController) {
             is MpvPlayer -> {
                 AndroidView(
@@ -237,7 +237,6 @@ fun PlayerScreen(
                     factory = { ctx ->
                         androidx.media3.ui.PlayerView(ctx).apply {
                             useController = false
-                            // 此处的 player 已经被 Kotlin 智能转换并锁定为 Media3Player，绝不崩溃！
                             this.player = player.exoPlayer
                         }
                     },
@@ -258,10 +257,11 @@ fun PlayerScreen(
             }
         }
 
+        // 【优化1】：时钟显示到秒，无阴影底色，字号改小为 24.sp，取消加粗
         if (viewModel.showClock && !viewModel.isSyncing) {
             var currentTimeString by remember { mutableStateOf("") }
             LaunchedEffect(Unit) {
-                val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+                val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                 while (true) {
                     currentTimeString = formatter.format(Date())
                     delay(1000)
@@ -271,9 +271,8 @@ fun PlayerScreen(
                 Text(
                     text = currentTimeString,
                     color = Color.White,
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 6.dp)
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Normal
                 )
             }
         }
@@ -365,14 +364,9 @@ fun AdvancedSettingsSidebar(
     onAddNewSource: () -> Unit,
     onClose: () -> Unit
 ) {
-    var userActionTrigger by remember { mutableIntStateOf(0) }
+    // 【优化2】：取消自动隐藏菜单，并且去除外层 Box 的 clickable，避免松开确认键时触发关闭！
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(userActionTrigger) {
-        delay(15000)
-        onClose()
-    }
 
     fun formatUrl(url: String): String {
         if (url.isBlank()) return "空"
@@ -385,10 +379,9 @@ fun AdvancedSettingsSidebar(
     }
 
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f))
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                    userActionTrigger++
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ESCAPE) {
                         onClose()
                         return@onPreviewKeyEvent true
@@ -541,7 +534,8 @@ fun ChannelListSidebar(
         mutableIntStateOf(channels.indexOfFirst { it.id == currentPlaying?.id }.coerceAtLeast(0))
     }
 
-    LaunchedEffect(userActionTrigger) { delay(8000); onClose() }
+    // 【优化3】：频道列表无操作 3 秒后自动隐藏
+    LaunchedEffect(userActionTrigger) { delay(3000); onClose() }
 
     LaunchedEffect(currentFocusedIndex) {
         delay(50)
