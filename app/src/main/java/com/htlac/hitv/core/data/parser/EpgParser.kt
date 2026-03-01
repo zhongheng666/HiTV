@@ -17,13 +17,17 @@ import javax.inject.Inject
 class EpgParser @Inject constructor(
     private val okHttpClient: OkHttpClient
 ) {
+    // 【统一 Tag】
+    private val TAG = "HiTV_Debug"
     private val dateFormat = SimpleDateFormat("yyyyMMddHHmmss Z", Locale.getDefault())
 
     fun parse(url: String): Flow<List<EpgProgram>> = flow {
+        Log.d(TAG, "🟢 [EPG解析器] 启动下载: $url")
         val request = Request.Builder().url(url).build()
         val response = okHttpClient.newCall(request).execute()
 
         if (!response.isSuccessful) {
+            Log.e(TAG, "❌ [EPG解析器] 下载失败，HTTP状态码: ${response.code}")
             throw Exception("EPG 下载失败，HTTP 状态码: ${response.code}")
         }
 
@@ -35,7 +39,6 @@ class EpgParser @Inject constructor(
         val batchSize = 1000
         val currentBatch = mutableListOf<EpgProgram>()
 
-        // 【核心魔法：建立频道 ID 和 名称的映射字典】
         val channelMap = mutableMapOf<String, String>()
 
         var currentChannelId = ""
@@ -43,9 +46,11 @@ class EpgParser @Inject constructor(
         var currentStart = 0L
         var currentEnd = 0L
         var currentDesc = ""
-
         var isParsingChannel = false
-        var currentChannelMapId = ""
+
+        var parsedProgramCount = 0
+
+        Log.d(TAG, "🟢 [EPG解析器] 开始读取 XML 节点...")
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             when (eventType) {
@@ -53,14 +58,14 @@ class EpgParser @Inject constructor(
                     when (parser.name) {
                         "channel" -> {
                             isParsingChannel = true
-                            currentChannelMapId = parser.getAttributeValue(null, "id") ?: ""
+                            currentChannelId = parser.getAttributeValue(null, "id") ?: ""
                         }
                         "display-name" -> {
-                            // 记下频道名称，比如把 "1" 映射为 "CCTV-1"
                             if (isParsingChannel) {
-                                val name = parser.nextText()
-                                if (currentChannelMapId.isNotEmpty()) {
-                                    channelMap[currentChannelMapId] = name
+                                val name = parser.nextText().trim()
+                                if (currentChannelId.isNotEmpty() && name.isNotEmpty()) {
+                                    channelMap[currentChannelId] = name
+                                    Log.d(TAG, "📺 [EPG频道字典] 提取成功: ID=[$currentChannelId] -> 名字=[$name]")
                                 }
                             }
                         }
@@ -73,8 +78,8 @@ class EpgParser @Inject constructor(
                             currentTitle = ""
                             currentDesc = ""
                         }
-                        "title" -> if (!isParsingChannel) currentTitle = parser.nextText()
-                        "desc" -> if (!isParsingChannel) currentDesc = parser.nextText()
+                        "title" -> currentTitle = parser.nextText().trim()
+                        "desc" -> currentDesc = parser.nextText().trim()
                     }
                 }
                 XmlPullParser.END_TAG -> {
@@ -82,13 +87,18 @@ class EpgParser @Inject constructor(
                         isParsingChannel = false
                     }
                     if (parser.name == "programme") {
-                        // 【绝杀】：从字典里找出对应的中文频道名，一起存入数据库！
                         val mappedName = channelMap[currentChannelId] ?: ""
+
+                        // 抽样打印前 10 条节目单，检查时间戳是否解析出了 0
+                        if (parsedProgramCount < 10) {
+                            Log.d(TAG, "🎬 [EPG节目抽样] 关联ID=[$currentChannelId], 最终名=[$mappedName], 节目=[$currentTitle], 起=[$currentStart], 止=[$currentEnd]")
+                        }
+                        parsedProgramCount++
 
                         currentBatch.add(
                             EpgProgram(
                                 tvgId = currentChannelId,
-                                channelName = mappedName, // 赋值真正的频道名称！
+                                channelName = mappedName,
                                 title = currentTitle,
                                 startTime = currentStart,
                                 endTime = currentEnd,
@@ -97,6 +107,7 @@ class EpgParser @Inject constructor(
                         )
 
                         if (currentBatch.size >= batchSize) {
+                            Log.d(TAG, "📦 [EPG解析器] 攒够 $batchSize 条，发射入库...")
                             emit(currentBatch.toList())
                             currentBatch.clear()
                         }
@@ -106,8 +117,12 @@ class EpgParser @Inject constructor(
             eventType = parser.next()
         }
 
-        if (currentBatch.isNotEmpty()) emit(currentBatch.toList())
+        if (currentBatch.isNotEmpty()) {
+            Log.d(TAG, "📦 [EPG解析器] 发射最后一批尾部数据: ${currentBatch.size} 条")
+            emit(currentBatch.toList())
+        }
         inputStream.close()
+        Log.d(TAG, "🟢 [EPG解析器] 彻底完成！共提炼节目: $parsedProgramCount 条")
     }.flowOn(Dispatchers.IO)
 
     private fun parseTime(timeStr: String): Long {
@@ -115,6 +130,7 @@ class EpgParser @Inject constructor(
         return try {
             dateFormat.parse(timeStr)?.time ?: 0L
         } catch (e: Exception) {
+            Log.e(TAG, "❌ [EPG时间解析器] 严重错误！无法解析的时间格式: [$timeStr] -> 这将导致 endTime 为 0，在数据库中被抛弃！")
             0L
         }
     }

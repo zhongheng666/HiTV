@@ -1,6 +1,7 @@
 package com.htlac.hitv.feature.player
 
 import android.view.SurfaceView
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -23,6 +24,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 
 @HiltViewModel
@@ -34,6 +38,8 @@ class PlayerViewModel @Inject constructor(
     private val ntpManager: NtpManager,
     private val settingsManager: SettingsManager
 ) : ViewModel() {
+
+    private val TAG = "HiTV_Debug"
 
     val activePlayer = MutableStateFlow<PlayerController>(media3Player)
     private var currentSurfaceView: SurfaceView? = null
@@ -53,7 +59,6 @@ class PlayerViewModel @Inject constructor(
     var isAdvancedSettingsVisible by mutableStateOf(false)
     var isSyncing by mutableStateOf(false)
 
-    // 【新增：UI 显示开关状态】
     var showDebugPanel by mutableStateOf(false)
     var showClock by mutableStateOf(true)
 
@@ -163,18 +168,38 @@ class PlayerViewModel @Inject constructor(
     private fun fetchEpgForChannel(channel: Channel) {
         viewModelScope.launch {
             currentProgram = null; nextProgram = null
-            epgDebugInfo = "🔍 匹配: [${channel.tvgId}], [${channel.name}]"
-            val programs = epgRepository.getProgramsForChannel(channel.tvgId, channel.name).firstOrNull() ?: emptyList()
-            if (programs.isEmpty()) return@launch
-            val currentTime = ntpManager.getCurrentTime()
-            val currentIndex = programs.indexOfFirst { it.startTime <= currentTime && it.endTime > currentTime }
-            if (currentIndex != -1) {
-                currentProgram = programs[currentIndex]
-                if (currentIndex + 1 < programs.size) nextProgram = programs[currentIndex + 1]
-            } else {
-                val futureIndex = programs.indexOfFirst { it.endTime > currentTime }
-                if (futureIndex != -1) nextProgram = programs[futureIndex]
+
+            val dbTotal = epgRepository.getProgramCount()
+            val safeTvgId = channel.tvgId ?: ""
+            val safeTvgName = channel.tvgName.ifEmpty { channel.name }
+
+            Log.d(TAG, "📡 [UI指令] 用户切台，准备获取EPG: 源名称=[${channel.name}], 提取到 tvgId=[$safeTvgId], 提取到 tvgName=[$safeTvgName]")
+
+            epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 传给SQL的值:\ntvgId=[$safeTvgId]\nchannelName=[$safeTvgName]"
+
+            // 使用你的严格匹配逻辑
+            val allPrograms = epgRepository.getProgramsForChannel(safeTvgId, safeTvgName).firstOrNull() ?: emptyList()
+
+            if (allPrograms.isEmpty()) {
+                epgDebugInfo += "\n❌ 结果: 未匹配到任何满足(名字/ID相同 且 尚未结束)的节目"
+                Log.d(TAG, "❌ [UI响应] 频道 ${channel.name} 匹配结果为空！")
+                return@launch
             }
+
+            val currentTime = ntpManager.getCurrentTime()
+            val timeFormatter = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+
+            epgDebugInfo += "\n✅ 命中 ${allPrograms.size} 条有效节目"
+            epgDebugInfo += "\n⏰ NTP时间: ${timeFormatter.format(Date(currentTime))}"
+
+            // SQL已经拦截了结束时间早于当前的，所以拿出来的第一条必然是正在播或即将播的
+            currentProgram = allPrograms.firstOrNull()
+            if (allPrograms.size > 1) {
+                nextProgram = allPrograms[1]
+            }
+
+            Log.d(TAG, "✅ [UI响应] 频道 ${channel.name} 最终展现在播: ${currentProgram?.title}")
+            epgDebugInfo += "\n▶️ 在播: ${currentProgram?.title}"
         }
     }
 

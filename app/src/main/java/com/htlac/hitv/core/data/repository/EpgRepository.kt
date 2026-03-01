@@ -18,6 +18,7 @@ class EpgRepository @Inject constructor(
     private val epgParser: EpgParser,
     private val ntpManager: NtpManager
 ) {
+    // 【统一 Tag】
     private val TAG = "HiTV_Debug"
 
     private val _epgSyncEvent = MutableSharedFlow<String>()
@@ -25,12 +26,15 @@ class EpgRepository @Inject constructor(
 
     fun getProgramsForChannel(tvgId: String, channelName: String): Flow<List<EpgProgram>> {
         val accurateCurrentTime = ntpManager.getCurrentTime()
+        Log.d(TAG, "🔎 [SQL查询命令] 正在数据库检索 -> 目标 tvgId=[$tvgId], 目标 channelName=[$channelName], 当前NTP时间阈值=[$accurateCurrentTime]")
         return epgDao.getProgramsForChannel(tvgId, channelName, accurateCurrentTime)
     }
 
+    suspend fun getProgramCount(): Int = epgDao.getProgramCount()
+
     suspend fun syncEpgFromUrl(epgUrl: String) {
         Log.i(TAG, "📡 EPG 节目单开始在后台下载解析: $epgUrl")
-        _epgSyncEvent.emit("📡 EPG 节目单开始在后台下载解析...")
+        _epgSyncEvent.emit("📡 EPG 开始下载解析...")
 
         epgDao.deleteAll()
         var totalPrograms = 0
@@ -38,7 +42,7 @@ class EpgRepository @Inject constructor(
         try {
             epgParser.parse(epgUrl)
                 .catch { e ->
-                    Log.e(TAG, "❌ EPG 解析失败: ${e.message}", e)
+                    Log.e(TAG, "❌ [Repository] EPG 解析流断裂: ${e.message}", e)
                     _epgSyncEvent.emit("❌ EPG 解析失败: ${e.message}")
                 }
                 .collect { batchPrograms ->
@@ -46,13 +50,12 @@ class EpgRepository @Inject constructor(
                     totalPrograms += batchPrograms.size
                 }
 
-            // 【核心：将 EPG 获取结果强力输出到 Logcat】
-            Log.i(TAG, "✅ EPG 更新成功！后台共解析入库 $totalPrograms 条节目。")
-            _epgSyncEvent.emit("✅ EPG 更新成功！共解析 $totalPrograms 条节目。")
-
+            val dbCount = epgDao.getProgramCount()
+            Log.i(TAG, "✅ [Repository] EPG 更新成功！流解析了 $totalPrograms 条，数据库实际写入了 $dbCount 条！")
+            _epgSyncEvent.emit("✅ EPG 更新成功！(实存 $dbCount 条)")
         } catch (e: Exception) {
-            Log.e(TAG, "❌ EPG 更新发生异常", e)
-            _epgSyncEvent.emit("❌ EPG 更新发生异常")
+            Log.e(TAG, "❌ [Repository] EPG 严重异常", e)
+            _epgSyncEvent.emit("❌ EPG 严重异常: ${e.message}")
         }
     }
 }
