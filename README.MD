@@ -98,4 +98,4 @@ Tivimate、PerfectPlayer都是非常好的播放器，但是设置太多，配�
 
 ## 📄 License
 
-本项目基于 [MIT License](https://www.google.com/search?q=LICENSE) 开源。
+本项目基于 [GPLv3 License]开源。
