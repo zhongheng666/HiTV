@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // 【消灭原生冷启动黑屏】：在 Compose 渲染前，立刻将背景还原成纯黑，与我们的纯黑动画无缝衔接
-        window.setBackgroundDrawableResource(android.R.color.black)
+//        window.setBackgroundDrawableResource(android.R.color.black)
         super.onCreate(savedInstanceState)
 
         lifecycleScope.launch {
