@@ -170,18 +170,17 @@ class PlayerViewModel @Inject constructor(
             currentProgram = null; nextProgram = null
 
             val dbTotal = epgRepository.getProgramCount()
-            val safeTvgId = channel.tvgId ?: ""
-            val safeTvgName = channel.tvgName.ifEmpty { channel.name }
 
-            Log.d(TAG, "📡 [UI指令] 用户切台，准备获取EPG: 源名称=[${channel.name}], 提取到 tvgId=[$safeTvgId], 提取到 tvgName=[$safeTvgName]")
+            // 【消灭告警】：不再使用冗余的 Elvis 操作符，直接传原始值给底层 SQL 进行硬刚匹配！
+            Log.d(TAG, "📡 [UI指令] 用户切台，准备获取EPG: 源名称=[${channel.name}], 提取到 tvgId=[${channel.tvgId}], 提取到 tvgName=[${channel.tvgName}]")
 
-            epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 传给SQL的值:\ntvgId=[$safeTvgId]\nchannelName=[$safeTvgName]"
+            epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 传给SQL的值:\ntvgId=[${channel.tvgId}]\nchannelName=[${channel.name}]"
 
-            // 使用你的严格匹配逻辑
-            val allPrograms = epgRepository.getProgramsForChannel(safeTvgId, safeTvgName).firstOrNull() ?: emptyList()
+            // 底层 SQL 会利用 tvgId 或者 channel.name 进行严格检索
+            val allPrograms = epgRepository.getProgramsForChannel(channel.tvgId, channel.name).firstOrNull() ?: emptyList()
 
             if (allPrograms.isEmpty()) {
-                epgDebugInfo += "\n❌ 结果: 未匹配到任何满足(名字/ID相同 且 尚未结束)的节目"
+                epgDebugInfo += "\n❌ 结果: 未匹配到任何满足条件的在播节目"
                 Log.d(TAG, "❌ [UI响应] 频道 ${channel.name} 匹配结果为空！")
                 return@launch
             }
@@ -192,7 +191,6 @@ class PlayerViewModel @Inject constructor(
             epgDebugInfo += "\n✅ 命中 ${allPrograms.size} 条有效节目"
             epgDebugInfo += "\n⏰ NTP时间: ${timeFormatter.format(Date(currentTime))}"
 
-            // SQL已经拦截了结束时间早于当前的，所以拿出来的第一条必然是正在播或即将播的
             currentProgram = allPrograms.firstOrNull()
             if (allPrograms.size > 1) {
                 nextProgram = allPrograms[1]
