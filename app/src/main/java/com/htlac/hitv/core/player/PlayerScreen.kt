@@ -58,8 +58,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
-//import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +67,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.tv.material3.Text
 import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
@@ -94,17 +93,16 @@ fun PlayerScreen(
     val debugInfo by activeController.debugInfo.collectAsState()
 
     val channels by viewModel.allChannels.collectAsState()
+    val isNtpSynced by viewModel.ntpSynced.collectAsState()
     val currentIptv by viewModel.currentIptvUrl.collectAsState()
     val iptvHistory by viewModel.iptvHistory.collectAsState()
     val currentEpg by viewModel.currentEpgUrl.collectAsState()
     val epgHistory by viewModel.epgHistory.collectAsState()
     val useMpv by viewModel.useMpv.collectAsState()
-    val isNtpSynced by viewModel.ntpSynced.collectAsState()
     val forceSoftAudio by viewModel.forceSoftAudio.collectAsState()
 
     val rootFocusRequester = remember { FocusRequester() }
     val context = LocalContext.current
-    var isLongPressHandled by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -122,7 +120,6 @@ fun PlayerScreen(
     LaunchedEffect(Unit) {
         viewModel.epgSyncEvent.collect { message -> Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
-
 
     LaunchedEffect(viewModel.isChannelListVisible, viewModel.isAdvancedSettingsVisible) {
         if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
@@ -182,18 +179,16 @@ fun PlayerScreen(
 
                     if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (action == KeyEvent.ACTION_DOWN) {
-                            if (event.nativeKeyEvent.repeatCount > 0 && !isLongPressHandled && viewModel.numpadBuffer.isEmpty()) {
-                                isLongPressHandled = true
+                            if (event.nativeKeyEvent.repeatCount > 0 && viewModel.numpadBuffer.isEmpty()) {
                                 viewModel.isAdvancedSettingsVisible = true
                             }
                             return@onPreviewKeyEvent true
                         } else if (action == KeyEvent.ACTION_UP) {
                             if (viewModel.numpadBuffer.isNotEmpty()) {
                                 viewModel.executeNumpadSwitch()
-                            } else if (!isLongPressHandled) {
+                            } else {
                                 viewModel.isChannelListVisible = true
                             }
-                            isLongPressHandled = false
                             return@onPreviewKeyEvent true
                         }
                     }
@@ -218,13 +213,9 @@ fun PlayerScreen(
                     factory = { ctx ->
                         SurfaceView(ctx).apply {
                             holder.addCallback(object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                    viewModel.setSurface(this@apply)
-                                }
+                                override fun surfaceCreated(holder: SurfaceHolder) { viewModel.setSurface(this@apply) }
                                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                    viewModel.setSurface(null)
-                                }
+                                override fun surfaceDestroyed(holder: SurfaceHolder) { viewModel.setSurface(null) }
                             })
                         }
                     }
@@ -239,9 +230,7 @@ fun PlayerScreen(
                             this.player = player.exoPlayer
                         }
                     },
-                    update = { view ->
-                        view.player = player.exoPlayer
-                    }
+                    update = { view -> view.player = player.exoPlayer }
                 )
             }
         }
@@ -256,8 +245,6 @@ fun PlayerScreen(
             }
         }
 
-        // 【优化1】：时钟显示到秒，无阴影底色，字号改小为 24.sp，取消加粗
-        // 【优化1 & 新增指示灯】：苹果级设计，引入 NTP 红绿灯
         if (viewModel.showClock && !viewModel.isSyncing) {
             var currentTimeString by remember { mutableStateOf("") }
             LaunchedEffect(Unit) {
@@ -269,20 +256,12 @@ fun PlayerScreen(
             }
             Box(modifier = Modifier.align(Alignment.TopEnd).padding(32.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // NTP 校时红绿点
                     Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(androidx.compose.foundation.shape.CircleShape)
+                        modifier = Modifier.size(10.dp).clip(androidx.compose.foundation.shape.CircleShape)
                             .background(if (isNtpSynced) Color(0xFF34C759) else Color(0xFFFF3B30))
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = currentTimeString,
-                        color = Color.White,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Normal
-                    )
+                    Text(text = currentTimeString, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Normal)
                 }
             }
         }
@@ -302,13 +281,8 @@ fun PlayerScreen(
                 exit = fadeOut(tween(150)) + scaleOut(tween(150))
             ) {
                 Text(
-                    text = viewModel.numpadBuffer,
-                    color = Color.White,
-                    fontSize = 64.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(16.dp))
-                        .padding(horizontal = 32.dp, vertical = 16.dp)
+                    text = viewModel.numpadBuffer, color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(16.dp)).padding(horizontal = 32.dp, vertical = 16.dp)
                 )
             }
         }
@@ -344,6 +318,8 @@ fun PlayerScreen(
                 showClock = viewModel.showClock,
                 onSwitchIptv = { viewModel.switchIptvSource(it) },
                 onSwitchEpg = { viewModel.switchEpgSource(it) },
+                onDeleteIptv = { viewModel.deleteIptvSource(it) },
+                onDeleteEpg = { viewModel.deleteEpgSource(it) },
                 onToggleMpv = { viewModel.toggleMpv(it) },
                 onToggleSoftAudio = { viewModel.toggleSoftAudio(it) },
                 onToggleDebugPanel = { viewModel.showDebugPanel = it },
@@ -367,6 +343,8 @@ fun AdvancedSettingsSidebar(
     showClock: Boolean,
     onSwitchIptv: (String) -> Unit,
     onSwitchEpg: (String) -> Unit,
+    onDeleteIptv: (String) -> Unit,
+    onDeleteEpg: (String) -> Unit,
     onToggleMpv: (Boolean) -> Unit,
     onToggleSoftAudio: (Boolean) -> Unit,
     onToggleDebugPanel: (Boolean) -> Unit,
@@ -374,7 +352,6 @@ fun AdvancedSettingsSidebar(
     onAddNewSource: () -> Unit,
     onClose: () -> Unit
 ) {
-    // 【优化2】：取消自动隐藏菜单，并且去除外层 Box 的 clickable，避免松开确认键时触发关闭！
     val listState = rememberLazyListState()
     val firstItemFocusRequester = remember { FocusRequester() }
 
@@ -393,94 +370,118 @@ fun AdvancedSettingsSidebar(
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ESCAPE) {
-                        onClose()
-                        return@onPreviewKeyEvent true
+                        onClose(); return@onPreviewKeyEvent true
                     }
                 }
                 false
             },
         contentAlignment = Alignment.CenterEnd
     ) {
-        Box(
-            modifier = Modifier.fillMaxHeight().width(420.dp).background(Color.Black.copy(alpha = 0.85f)).padding(top = 32.dp, bottom = 32.dp)
-        ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize()
-            ) {
+        Box(modifier = Modifier.fillMaxHeight().width(460.dp).background(Color.Black.copy(alpha = 0.85f)).padding(top = 32.dp, bottom = 32.dp)) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 item {
                     Text("高级与多源设置", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp))
                     Spacer(modifier = Modifier.height(32.dp))
                 }
 
-                item {
-                    Text("IPTV 直播源", color = Color(0xFF0A84FF), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
-                }
+                item { Text("IPTV 直播源", color = Color(0xFF0A84FF), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)) }
                 items(iptvHistory) { url ->
                     val isSelected = url == currentIptv
-                    TvRadioItem(text = formatUrl(url), isSelected = isSelected, onClick = { onSwitchIptv(url) }, modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                    TvRadioItem(
+                        text = formatUrl(url),
+                        isSelected = isSelected,
+                        onClick = { onSwitchIptv(url) },
+                        onDeleteClick = { onDeleteIptv(url) }, // 传入删除事件
+                        modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier
+                    )
                 }
                 item {
                     TvActionItem("➕ 扫码添加新 IPTV / EPG 源", onClick = onAddNewSource)
                     Spacer(modifier = Modifier.height(24.dp))
                 }
 
-                item {
-                    Text("EPG 节目单源", color = Color(0xFF34C759), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
-                }
+                item { Text("EPG 节目单源", color = Color(0xFF34C759), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)) }
                 items(epgHistory) { url ->
-                    TvRadioItem(text = formatUrl(url), isSelected = url == currentEpg, onClick = { onSwitchEpg(url) })
+                    TvRadioItem(
+                        text = formatUrl(url),
+                        isSelected = url == currentEpg,
+                        onClick = { onSwitchEpg(url) },
+                        onDeleteClick = { onDeleteEpg(url) } // 传入删除事件
+                    )
                 }
                 item { Spacer(modifier = Modifier.height(32.dp)) }
 
-                item {
-                    Text("播放器内核调度 (立即生效)", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
-                }
+                item { Text("播放器内核调度 (立即生效)", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)) }
                 item { TvToggleItem("使用 MPV 备用内核", checked = useMpv, onCheckedChange = onToggleMpv) }
                 item { TvToggleItem("强制开启音频软解", checked = forceSoftAudio, onCheckedChange = onToggleSoftAudio) }
                 item { Spacer(modifier = Modifier.height(24.dp)) }
 
-                item {
-                    Text("界面显示设置", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
-                }
+                item { Text("界面显示设置", color = Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)) }
                 item { TvToggleItem("显示右上角时钟", checked = showClock, onCheckedChange = onToggleClock) }
                 item { TvToggleItem("显示底层 Debug 探针面板", checked = showDebugPanel, onCheckedChange = onToggleDebugPanel) }
-
                 item { Spacer(modifier = Modifier.height(64.dp)) }
             }
         }
     }
 }
 
+// 【重新设计】：带独立明确删除按钮的 TvRadioItem
 @Composable
-fun TvRadioItem(text: String, isSelected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    var isFocused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (isFocused) 1.03f else 1f, tween(150), label = "")
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 32.dp, vertical = 6.dp)
-            .scale(scale)
-            .shadow(if (isFocused) 8.dp else 0.dp, RoundedCornerShape(8.dp))
-            .onFocusChanged { isFocused = it.isFocused }
-            .focusable()
-            .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER)) {
-                    onClick(); return@onPreviewKeyEvent true
-                }
-                false
-            }
-            .clickable { onClick() }
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (isFocused) Color.White else (if (isSelected) Color(0xFF1C1C1E) else Color.Transparent))
-            .padding(horizontal = 16.dp, vertical = 14.dp)
+fun TvRadioItem(
+    text: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onDeleteClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(text, color = if (isFocused) Color.Black else (if (isSelected) Color.White else Color.Gray), fontSize = 14.sp, fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (isSelected) {
-                Spacer(modifier = Modifier.width(12.dp))
-                Text("🟢 当前", color = if (isFocused) Color.Black else Color(0xFF34C759), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // 核心选择区域
+        var isMainFocused by remember { mutableStateOf(false) }
+        val mainScale by animateFloatAsState(if (isMainFocused) 1.03f else 1f, tween(150), label = "")
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .scale(mainScale)
+                .shadow(if (isMainFocused) 8.dp else 0.dp, RoundedCornerShape(8.dp))
+                .onFocusChanged { isMainFocused = it.isFocused }
+                .focusable()
+                .clickable { onClick() }
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isMainFocused) Color.White else (if (isSelected) Color(0xFF1C1C1E) else Color.Transparent))
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(text, color = if (isMainFocused) Color.Black else (if (isSelected) Color.White else Color.Gray), fontSize = 14.sp, fontWeight = if (isSelected || isMainFocused) FontWeight.Bold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (isSelected) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("🟢 当前", color = if (isMainFocused) Color.Black else Color(0xFF34C759), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // 独立删除按钮：明确展示，防止误操作
+        if (onDeleteClick != null && !isSelected) {
+            Spacer(modifier = Modifier.width(12.dp))
+            var isDelFocused by remember { mutableStateOf(false) }
+            val delScale by animateFloatAsState(if (isDelFocused) 1.1f else 1f, tween(150), label = "")
+
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .scale(delScale)
+                    .shadow(if (isDelFocused) 8.dp else 0.dp, RoundedCornerShape(22.dp))
+                    .onFocusChanged { isDelFocused = it.isFocused }
+                    .focusable()
+                    .clickable { onDeleteClick() }
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(if (isDelFocused) Color(0xFFFF3B30) else Color(0xFF2C2C2E)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("🗑️", fontSize = 18.sp)
             }
         }
     }
@@ -540,12 +541,10 @@ fun ChannelListSidebar(
     var userActionTrigger by remember { mutableIntStateOf(0) }
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
-    // 【修复1】：将 it.id 改为 it.urlHash
     var currentFocusedIndex by remember {
         mutableIntStateOf(channels.indexOfFirst { it.urlHash == currentPlaying?.urlHash }.coerceAtLeast(0))
     }
 
-    // 【优化3】：频道列表无操作 3 秒后自动隐藏
     LaunchedEffect(userActionTrigger) { delay(3000); onClose() }
 
     LaunchedEffect(currentFocusedIndex) {
@@ -554,9 +553,7 @@ fun ChannelListSidebar(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxHeight().width(360.dp).background(Color.Black.copy(alpha = 0.45f)).padding(24.dp)
-        ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxHeight().width(360.dp).background(Color.Black.copy(alpha = 0.45f)).padding(24.dp)) {
             val availableHeight = maxHeight.value
             val actualPageSize = maxOf(1, floor((availableHeight - 80f) / 68f).toInt())
 
@@ -575,18 +572,15 @@ fun ChannelListSidebar(
                         val keyCode = event.nativeKeyEvent.keyCode
 
                         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
-                            onClose()
-                            return@onPreviewKeyEvent true
+                            onClose(); return@onPreviewKeyEvent true
                         }
 
                         when (keyCode) {
                             KeyEvent.KEYCODE_DPAD_UP -> {
-                                if (currentFocusedIndex > 0) currentFocusedIndex--
-                                return@onPreviewKeyEvent true
+                                if (currentFocusedIndex > 0) currentFocusedIndex--; return@onPreviewKeyEvent true
                             }
                             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                if (currentFocusedIndex < channels.lastIndex) currentFocusedIndex++
-                                return@onPreviewKeyEvent true
+                                if (currentFocusedIndex < channels.lastIndex) currentFocusedIndex++; return@onPreviewKeyEvent true
                             }
                             KeyEvent.KEYCODE_DPAD_LEFT -> {
                                 if (channels.isNotEmpty() && currentPageIndex > 0) {
@@ -615,16 +609,13 @@ fun ChannelListSidebar(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     currentPageChannels.forEachIndexed { indexOnPage, channel ->
                         val globalIndex = startIndex + indexOnPage
-                        // 【修复2】：将 channel.id 改为 channel.urlHash
                         val isPlaying = channel.urlHash == currentPlaying?.urlHash
                         val isFocused = globalIndex == currentFocusedIndex
                         val requester = focusRequesters.getOrPut(globalIndex) { FocusRequester() }
                         val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(100), label = "scale")
 
                         Box(
-                            modifier = Modifier.fillMaxWidth()
-                                .height(60.dp)
-                                .scale(scale).shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp)).focusRequester(requester)
+                            modifier = Modifier.fillMaxWidth().height(60.dp).scale(scale).shadow(if (isFocused) 12.dp else 0.dp, RoundedCornerShape(12.dp)).focusRequester(requester)
                                 .onFocusChanged { if (it.isFocused) currentFocusedIndex = globalIndex }
                                 .onPreviewKeyEvent { keyEvent ->
                                     if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {

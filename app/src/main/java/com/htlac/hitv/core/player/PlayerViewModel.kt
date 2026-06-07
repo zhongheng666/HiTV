@@ -38,7 +38,7 @@ class PlayerViewModel @Inject constructor(
     private val epgRepository: EpgRepository,
     private val ntpManager: NtpManager,
     private val settingsManager: SettingsManager,
-    private val epgSyncDaemon: EpgSyncDaemon // 【恢复】：注入EPG守护进程
+    private val epgSyncDaemon: EpgSyncDaemon
 ) : ViewModel() {
 
     private val TAG = "HiTV_Debug"
@@ -48,8 +48,6 @@ class PlayerViewModel @Inject constructor(
 
     val allChannels = channelRepository.getAllChannels().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val epgSyncEvent = epgRepository.epgSyncEvent
-
-    // 【第三阶】：向 UI 层暴露 NTP 红绿灯状态
     val ntpSynced = ntpManager.isSyncedFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val currentIptvUrl = settingsManager.iptvUrlFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -78,7 +76,6 @@ class PlayerViewModel @Inject constructor(
     private var numpadJob: Job? = null
 
     init {
-        // 【第三阶】：智能状态记忆，启动时读取 DataStore 中的 Hash，精准还原上次看的频道
         viewModelScope.launch {
             allChannels.collect { channels ->
                 if (channels.isNotEmpty() && currentPlayingChannel == null) {
@@ -165,15 +162,22 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    // 【新增】：删除废弃的 IPTV 源
+    fun deleteIptvSource(url: String) {
+        viewModelScope.launch { settingsManager.removeIptvHistory(url) }
+    }
+
+    // 【新增】：删除废弃的 EPG 源
+    fun deleteEpgSource(url: String) {
+        viewModelScope.launch { settingsManager.removeEpgHistory(url) }
+    }
+
     fun toggleMpv(enabled: Boolean) { viewModelScope.launch { settingsManager.setUseMpv(enabled) } }
     fun toggleSoftAudio(enabled: Boolean) { viewModelScope.launch { settingsManager.setForceSoftAudio(enabled) } }
 
     fun playChannel(channel: Channel) {
         currentPlayingChannel = channel
-
-        // 【第三阶】：每次换台，将该频道的 Hash 死死印入持久化存储
         viewModelScope.launch { settingsManager.saveLastChannelHash(channel.urlHash) }
-
         activePlayer.value.play(channel.url)
         isChannelListVisible = false
         fetchEpgForChannel(channel)
@@ -185,13 +189,11 @@ class PlayerViewModel @Inject constructor(
             currentProgram = null; nextProgram = null
             val dbTotal = epgRepository.getProgramCount()
 
-            // 【第一阶修复】：严格使用 urlHash 进行 O(1) 检索
             epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 极速检索 Hash:\n[${channel.urlHash}]"
             val allPrograms = epgRepository.getProgramsForChannel(channel.urlHash).firstOrNull() ?: emptyList()
 
             if (allPrograms.isEmpty()) {
                 epgDebugInfo += "\n❌ 结果: 数据过期或为空"
-                // 【第二阶修复】：过期嗅探触发后台重拉
                 epgSyncDaemon.triggerSync("节目单过期嗅探报警")
                 return@launch
             }

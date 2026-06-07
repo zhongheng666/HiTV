@@ -25,8 +25,6 @@ class SettingsManager @Inject constructor(
         val EPG_URL = stringPreferencesKey("epg_url")
         val USE_MPV = booleanPreferencesKey("use_mpv")
         val FORCE_SOFT_AUDIO = booleanPreferencesKey("force_soft_audio")
-
-        // 【新增】：频道记忆核心
         val LAST_CHANNEL_HASH = stringPreferencesKey("last_channel_hash")
 
         val IPTV_HISTORY = stringSetPreferencesKey("iptv_history")
@@ -37,8 +35,6 @@ class SettingsManager @Inject constructor(
     val epgUrlFlow: Flow<String> = context.dataStore.data.map { it[EPG_URL] ?: "" }
     val useMpvFlow: Flow<Boolean> = context.dataStore.data.map { it[USE_MPV] ?: false }
     val forceSoftAudioFlow: Flow<Boolean> = context.dataStore.data.map { it[FORCE_SOFT_AUDIO] ?: false }
-
-    // 【新增】：暴露记忆频道流
     val lastChannelHashFlow: Flow<String> = context.dataStore.data.map { it[LAST_CHANNEL_HASH] ?: "" }
 
     val iptvHistoryFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
@@ -76,9 +72,31 @@ class SettingsManager @Inject constructor(
     suspend fun setUseMpv(enabled: Boolean) { context.dataStore.edit { it[USE_MPV] = enabled } }
     suspend fun setForceSoftAudio(enabled: Boolean) { context.dataStore.edit { it[FORCE_SOFT_AUDIO] = enabled } }
 
-    // 【新增】：保存最后观看频道的 Hash
     suspend fun saveLastChannelHash(hash: String) {
         context.dataStore.edit { it[LAST_CHANNEL_HASH] = hash }
+    }
+
+    // 【新增】：定向精准清除作废的 IPTV 源
+    suspend fun removeIptvHistory(url: String) {
+        context.dataStore.edit { preferences ->
+            val currentHistory = preferences[IPTV_HISTORY] ?: emptySet()
+            preferences[IPTV_HISTORY] = currentHistory - url
+            // 如果删除的是当前正在使用的坏源，顺便把它从主阵地剔除
+            if (preferences[IPTV_URL] == url) {
+                preferences[IPTV_URL] = ""
+            }
+        }
+    }
+
+    // 【新增】：定向精准清除作废的 EPG 源
+    suspend fun removeEpgHistory(url: String) {
+        context.dataStore.edit { preferences ->
+            val currentHistory = preferences[EPG_HISTORY] ?: emptySet()
+            preferences[EPG_HISTORY] = currentHistory - url
+            if (preferences[EPG_URL] == url) {
+                preferences[EPG_URL] = ""
+            }
+        }
     }
 
     suspend fun clearAllHistory() {
