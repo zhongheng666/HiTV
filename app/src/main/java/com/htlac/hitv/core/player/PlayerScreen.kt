@@ -40,12 +40,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -151,6 +149,9 @@ fun PlayerScreen(
         }
     }
 
+    // 【核心修复 3】：引入根节点长按状态锁
+    var isRootLongPressHandled by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -179,16 +180,21 @@ fun PlayerScreen(
 
                     if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
                         if (action == KeyEvent.ACTION_DOWN) {
-                            if (event.nativeKeyEvent.repeatCount > 0 && viewModel.numpadBuffer.isEmpty()) {
+                            // 【长按拦截】：首次触发长按事件，弹出设置，并上锁
+                            if (event.nativeKeyEvent.repeatCount > 0 && !isRootLongPressHandled && viewModel.numpadBuffer.isEmpty()) {
+                                isRootLongPressHandled = true
                                 viewModel.isAdvancedSettingsVisible = true
                             }
                             return@onPreviewKeyEvent true
                         } else if (action == KeyEvent.ACTION_UP) {
                             if (viewModel.numpadBuffer.isNotEmpty()) {
                                 viewModel.executeNumpadSwitch()
-                            } else {
+                            } else if (!isRootLongPressHandled) {
+                                // 只有在“非长按”的情况下松手，才算作真正的普通点击，呼出频道列表
                                 viewModel.isChannelListVisible = true
                             }
+                            // 重置锁，为下一次按键做准备
+                            isRootLongPressHandled = false
                             return@onPreviewKeyEvent true
                         }
                     }
@@ -391,7 +397,7 @@ fun AdvancedSettingsSidebar(
                         text = formatUrl(url),
                         isSelected = isSelected,
                         onClick = { onSwitchIptv(url) },
-                        onDeleteClick = { onDeleteIptv(url) }, // 传入删除事件
+                        onDeleteClick = { onDeleteIptv(url) },
                         modifier = if (url == iptvHistory.firstOrNull()) Modifier.focusRequester(firstItemFocusRequester) else Modifier
                     )
                 }
@@ -406,7 +412,7 @@ fun AdvancedSettingsSidebar(
                         text = formatUrl(url),
                         isSelected = url == currentEpg,
                         onClick = { onSwitchEpg(url) },
-                        onDeleteClick = { onDeleteEpg(url) } // 传入删除事件
+                        onDeleteClick = { onDeleteEpg(url) }
                     )
                 }
                 item { Spacer(modifier = Modifier.height(32.dp)) }
@@ -425,7 +431,6 @@ fun AdvancedSettingsSidebar(
     }
 }
 
-// 【彻底重构】：带独立且永远可见的垃圾桶按钮，并强制接管左右焦点跳转
 @Composable
 fun TvRadioItem(
     text: String,
@@ -434,7 +439,6 @@ fun TvRadioItem(
     onDeleteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    // 建立绝对坐标的焦点请求器
     val mainFocusRequester = remember { FocusRequester() }
     val deleteFocusRequester = remember { FocusRequester() }
 
@@ -442,7 +446,6 @@ fun TvRadioItem(
         modifier = modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // ================= 1. 核心选项卡 =================
         var isMainFocused by remember { mutableStateOf(false) }
         val mainScale by animateFloatAsState(if (isMainFocused) 1.03f else 1f, tween(150), label = "")
 
@@ -453,14 +456,17 @@ fun TvRadioItem(
                 .shadow(if (isMainFocused) 8.dp else 0.dp, RoundedCornerShape(8.dp))
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (isMainFocused) Color.White else (if (isSelected) Color(0xFF1C1C1E) else Color.Transparent))
-                .focusRequester(mainFocusRequester) // 绑定焦点
+                .focusRequester(mainFocusRequester)
                 .onFocusChanged { isMainFocused = it.isFocused }
                 .focusable()
                 .onPreviewKeyEvent { event ->
-                    // 【强制拦截】：只要在这里按了右键，强制把焦点甩给右边的垃圾桶！
                     if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                         if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && onDeleteClick != null) {
                             try { deleteFocusRequester.requestFocus() } catch (e: Exception) {}
+                            return@onPreviewKeyEvent true
+                        }
+                        else if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
+                            onClick()
                             return@onPreviewKeyEvent true
                         }
                     }
@@ -478,8 +484,6 @@ fun TvRadioItem(
             }
         }
 
-        // ================= 2. 独立删除按钮 =================
-        // 取消了 !isSelected 的限制，永远显示！
         if (onDeleteClick != null) {
             Spacer(modifier = Modifier.width(12.dp))
             var isDelFocused by remember { mutableStateOf(false) }
@@ -491,16 +495,18 @@ fun TvRadioItem(
                     .scale(delScale)
                     .shadow(if (isDelFocused) 8.dp else 0.dp, RoundedCornerShape(22.dp))
                     .clip(RoundedCornerShape(22.dp))
-                    // 焦点移上去变警戒红，平时保持暗灰
                     .background(if (isDelFocused) Color(0xFFFF3B30) else Color(0xFF2C2C2E))
-                    .focusRequester(deleteFocusRequester) // 绑定焦点
+                    .focusRequester(deleteFocusRequester)
                     .onFocusChanged { isDelFocused = it.isFocused }
                     .focusable()
                     .onPreviewKeyEvent { event ->
-                        // 【强制拦截】：在垃圾桶上按左键，强制退回到主选项卡
                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                             if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                                 try { mainFocusRequester.requestFocus() } catch (e: Exception) {}
+                                return@onPreviewKeyEvent true
+                            }
+                            else if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER) {
+                                onDeleteClick()
                                 return@onPreviewKeyEvent true
                             }
                         }

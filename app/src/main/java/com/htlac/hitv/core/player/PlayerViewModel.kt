@@ -139,35 +139,43 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun switchIptvSource(newUrl: String) {
+        // 【核心修复 1】：恢复保护机制，如果点击的是当前正在播放的源，无视操作，防误触！
         if (newUrl == currentIptvUrl.value) return
+
         viewModelScope.launch {
             isSyncing = true
             isAdvancedSettingsVisible = false
             activePlayer.value.stop()
+            currentPlayingChannel = null
             try {
                 settingsManager.saveIptvUrl(newUrl)
                 channelRepository.syncChannelsFromUrl(newUrl)
-                val newChannels = channelRepository.getAllChannels().firstOrNull() ?: emptyList()
-                if (newChannels.isNotEmpty()) playChannel(newChannels[0])
-            } catch (e: Exception) { epgDebugInfo = "❌ 切换源失败: ${e.message}" } finally { isSyncing = false }
+            } catch (e: Exception) {
+                epgDebugInfo = "❌ 切换源失败: ${e.message}"
+            } finally {
+                isSyncing = false
+            }
         }
     }
 
     fun switchEpgSource(newUrl: String) {
+        // 【核心修复 2】：恢复保护机制，防误触！
         if (newUrl == currentEpgUrl.value) return
+
         viewModelScope.launch {
             isAdvancedSettingsVisible = false
             settingsManager.saveEpgUrl(newUrl)
-            try { epgRepository.syncEpgFromUrl(newUrl) } catch (e: Exception) {}
+            try {
+                epgRepository.syncEpgFromUrl(newUrl)
+                currentPlayingChannel?.let { fetchEpgForChannel(it) }
+            } catch (e: Exception) {}
         }
     }
 
-    // 【新增】：删除废弃的 IPTV 源
     fun deleteIptvSource(url: String) {
         viewModelScope.launch { settingsManager.removeIptvHistory(url) }
     }
 
-    // 【新增】：删除废弃的 EPG 源
     fun deleteEpgSource(url: String) {
         viewModelScope.launch { settingsManager.removeEpgHistory(url) }
     }

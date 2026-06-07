@@ -76,23 +76,22 @@ class SettingsManager @Inject constructor(
         context.dataStore.edit { it[LAST_CHANNEL_HASH] = hash }
     }
 
-    // 【新增】：定向精准清除作废的 IPTV 源
+    // 【深度修复】：使用 filter 和 toSet 强制分配新内存地址，完美解决 DataStore 脏读不刷新的 Bug
     suspend fun removeIptvHistory(url: String) {
         context.dataStore.edit { preferences ->
             val currentHistory = preferences[IPTV_HISTORY] ?: emptySet()
-            preferences[IPTV_HISTORY] = currentHistory - url
-            // 如果删除的是当前正在使用的坏源，顺便把它从主阵地剔除
+            preferences[IPTV_HISTORY] = currentHistory.filter { it != url }.toSet()
             if (preferences[IPTV_URL] == url) {
                 preferences[IPTV_URL] = ""
             }
         }
     }
 
-    // 【新增】：定向精准清除作废的 EPG 源
+    // 【深度修复】：同上
     suspend fun removeEpgHistory(url: String) {
         context.dataStore.edit { preferences ->
             val currentHistory = preferences[EPG_HISTORY] ?: emptySet()
-            preferences[EPG_HISTORY] = currentHistory - url
+            preferences[EPG_HISTORY] = currentHistory.filter { it != url }.toSet()
             if (preferences[EPG_URL] == url) {
                 preferences[EPG_URL] = ""
             }
