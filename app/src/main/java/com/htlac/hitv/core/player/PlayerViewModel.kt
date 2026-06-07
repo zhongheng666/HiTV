@@ -38,7 +38,7 @@ class PlayerViewModel @Inject constructor(
     private val epgRepository: EpgRepository,
     private val ntpManager: NtpManager,
     private val settingsManager: SettingsManager,
-    private val epgSyncDaemon: EpgSyncDaemon // 【注入守护进程】
+    private val epgSyncDaemon: EpgSyncDaemon // 【恢复】：注入EPG守护进程
 ) : ViewModel() {
 
     private val TAG = "HiTV_Debug"
@@ -48,6 +48,9 @@ class PlayerViewModel @Inject constructor(
 
     val allChannels = channelRepository.getAllChannels().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val epgSyncEvent = epgRepository.epgSyncEvent
+
+    // 【第三阶】：向 UI 层暴露 NTP 红绿灯状态
+    val ntpSynced = ntpManager.isSyncedFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val currentIptvUrl = settingsManager.iptvUrlFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val iptvHistory = settingsManager.iptvHistoryFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
@@ -75,6 +78,17 @@ class PlayerViewModel @Inject constructor(
     private var numpadJob: Job? = null
 
     init {
+        // 【第三阶】：智能状态记忆，启动时读取 DataStore 中的 Hash，精准还原上次看的频道
+        viewModelScope.launch {
+            allChannels.collect { channels ->
+                if (channels.isNotEmpty() && currentPlayingChannel == null) {
+                    val lastHash = settingsManager.lastChannelHashFlow.firstOrNull()
+                    val targetChannel = channels.find { it.urlHash == lastHash } ?: channels[0]
+                    playChannel(targetChannel)
+                }
+            }
+        }
+
         viewModelScope.launch {
             epgSyncEvent.collect { message ->
                 if (message.contains("成功") || message.contains("✅")) {
@@ -109,10 +123,7 @@ class PlayerViewModel @Inject constructor(
         if (numpadBuffer.length >= 4) return
         numpadBuffer += digit
         numpadJob?.cancel()
-        numpadJob = viewModelScope.launch {
-            delay(2000)
-            executeNumpadSwitch()
-        }
+        numpadJob = viewModelScope.launch { delay(2000); executeNumpadSwitch() }
     }
 
     fun executeNumpadSwitch() {
@@ -141,9 +152,7 @@ class PlayerViewModel @Inject constructor(
                 channelRepository.syncChannelsFromUrl(newUrl)
                 val newChannels = channelRepository.getAllChannels().firstOrNull() ?: emptyList()
                 if (newChannels.isNotEmpty()) playChannel(newChannels[0])
-            } catch (e: Exception) {
-                epgDebugInfo = "❌ 切换源失败: ${e.message}"
-            } finally { isSyncing = false }
+            } catch (e: Exception) { epgDebugInfo = "❌ 切换源失败: ${e.message}" } finally { isSyncing = false }
         }
     }
 
@@ -161,6 +170,10 @@ class PlayerViewModel @Inject constructor(
 
     fun playChannel(channel: Channel) {
         currentPlayingChannel = channel
+
+        // 【第三阶】：每次换台，将该频道的 Hash 死死印入持久化存储
+        viewModelScope.launch { settingsManager.saveLastChannelHash(channel.urlHash) }
+
         activePlayer.value.play(channel.url)
         isChannelListVisible = false
         fetchEpgForChannel(channel)
@@ -172,13 +185,13 @@ class PlayerViewModel @Inject constructor(
             currentProgram = null; nextProgram = null
             val dbTotal = epgRepository.getProgramCount()
 
+            // 【第一阶修复】：严格使用 urlHash 进行 O(1) 检索
             epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 极速检索 Hash:\n[${channel.urlHash}]"
-
             val allPrograms = epgRepository.getProgramsForChannel(channel.urlHash).firstOrNull() ?: emptyList()
 
             if (allPrograms.isEmpty()) {
                 epgDebugInfo += "\n❌ 结果: 数据过期或为空"
-                // 【核心升级：嗅探器报警！】
+                // 【第二阶修复】：过期嗅探触发后台重拉
                 epgSyncDaemon.triggerSync("节目单过期嗅探报警")
                 return@launch
             }
@@ -190,9 +203,7 @@ class PlayerViewModel @Inject constructor(
             epgDebugInfo += "\n⏰ NTP: ${timeFormatter.format(Date(currentTime))}"
 
             currentProgram = allPrograms.firstOrNull()
-            if (allPrograms.size > 1) {
-                nextProgram = allPrograms[1]
-            }
+            if (allPrograms.size > 1) { nextProgram = allPrograms[1] }
             epgDebugInfo += "\n▶️ 在播: ${currentProgram?.title}"
         }
     }

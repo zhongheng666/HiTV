@@ -77,6 +77,7 @@ class Media3Player @Inject constructor(
             .setConnectTimeoutMs(5000)
             .setReadTimeoutMs(5000)
             .setUserAgent(userAgent)
+            .setDefaultRequestProperties(mapOf("Connection" to "close"))
 
         val loadControl = DefaultLoadControl.Builder()
             .setAllocator(DefaultAllocator(true, 64 * 1024))

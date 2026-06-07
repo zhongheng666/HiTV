@@ -99,6 +99,7 @@ fun PlayerScreen(
     val currentEpg by viewModel.currentEpgUrl.collectAsState()
     val epgHistory by viewModel.epgHistory.collectAsState()
     val useMpv by viewModel.useMpv.collectAsState()
+    val isNtpSynced by viewModel.ntpSynced.collectAsState()
     val forceSoftAudio by viewModel.forceSoftAudio.collectAsState()
 
     val rootFocusRequester = remember { FocusRequester() }
@@ -122,9 +123,6 @@ fun PlayerScreen(
         viewModel.epgSyncEvent.collect { message -> Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
 
-    LaunchedEffect(channels) {
-        if (channels.isNotEmpty() && viewModel.currentPlayingChannel == null) viewModel.playChannel(channels[0])
-    }
 
     LaunchedEffect(viewModel.isChannelListVisible, viewModel.isAdvancedSettingsVisible) {
         if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
@@ -259,6 +257,7 @@ fun PlayerScreen(
         }
 
         // 【优化1】：时钟显示到秒，无阴影底色，字号改小为 24.sp，取消加粗
+        // 【优化1 & 新增指示灯】：苹果级设计，引入 NTP 红绿灯
         if (viewModel.showClock && !viewModel.isSyncing) {
             var currentTimeString by remember { mutableStateOf("") }
             LaunchedEffect(Unit) {
@@ -269,12 +268,22 @@ fun PlayerScreen(
                 }
             }
             Box(modifier = Modifier.align(Alignment.TopEnd).padding(32.dp)) {
-                Text(
-                    text = currentTimeString,
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Normal
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // NTP 校时红绿点
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(if (isNtpSynced) Color(0xFF34C759) else Color(0xFFFF3B30))
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = currentTimeString,
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
             }
         }
 
