@@ -27,8 +27,14 @@ import androidx.media3.exoplayer.util.EventLogger
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -54,12 +60,15 @@ class Media3Player @Inject constructor(
     private var videoCodecInfo = "未知"
     private var realUrl = "追踪中..."
 
-    // 【核心改造 1】：公开 exoPlayer 实例，让外部能够获取它并注入到 PlayerView 中，解决 0x0 黑屏问题！
     val exoPlayer: ExoPlayer
     private val httpDataSourceFactory: DefaultHttpDataSource.Factory
 
     private var currentOriginalUrl = ""
     private var currentFallbackLevel = 0
+
+    // 【终极进化】：独立协程作用域与静默重连轮询器
+    private val playerScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var reconnectJob: Job? = null
 
     init {
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -79,7 +88,6 @@ class Media3Player @Inject constructor(
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
             .setEnableDecoderFallback(true)
 
-        // 终生只初始化一次，坚决不 release 防止僵尸死锁
         exoPlayer = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
             .build().apply {
@@ -112,22 +120,41 @@ class Media3Player @Inject constructor(
                         when (state) {
                             Player.STATE_BUFFERING -> _playbackState.value = PlaybackState.BUFFERING
                             Player.STATE_READY -> _playbackState.value = PlaybackState.PLAYING
-                            Player.STATE_IDLE, Player.STATE_ENDED -> _playbackState.value = PlaybackState.IDLE
+                            Player.STATE_IDLE -> {
+                                // 核心防御：如果正在执行轮询重连，绝不能把状态改成 IDLE（避免 UI 闪烁）
+                                if (reconnectJob?.isActive != true) {
+                                    _playbackState.value = PlaybackState.IDLE
+                                }
+                            }
+                            Player.STATE_ENDED -> {
+                                Log.w(TAG, "⚠️ [Media3] 直播流意外结束 (可能 Token 临时失效)，触发静默重连...")
+                                startSilentReconnect()
+                            }
                         }
                         updateDebugInfo()
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e(TAG, "💀 [Media3] 遇到致命错误: ${error.errorCodeName}", error)
-                        if (currentFallbackLevel < 2) {
-                            currentFallbackLevel++
-                            Log.e(TAG, "🔄 触发自动 Fallback 降级容错 -> 进入策略 $currentFallbackLevel")
-                            internalPlay(currentOriginalUrl, currentFallbackLevel)
+
+                        // 判定是否是网络断流（Nginx 403 / 302 过期等）
+                        val isNetworkError = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+
+                        if (isNetworkError) {
+                            Log.w(TAG, "📡 [Media3] 检测到网络流断开，启动静默不死重连...")
+                            startSilentReconnect()
                         } else {
-                            Log.e(TAG, "❌ 所有策略耗尽，彻底放弃。")
-                            _errorMessage.value = "错误: ${error.errorCodeName}\n已尝试多级容错修复失败。"
-                            _playbackState.value = PlaybackState.ERROR
-                            updateDebugInfo()
+                            // 若是解码错误，走降级策略
+                            if (currentFallbackLevel < 2) {
+                                currentFallbackLevel++
+                                Log.e(TAG, "🔄 触发自动 Fallback 降级容错 -> 进入策略 $currentFallbackLevel")
+                                internalPlay(currentOriginalUrl, currentFallbackLevel)
+                            } else {
+                                Log.e(TAG, "❌ 解码容错耗尽！转入死皮赖脸轮询模式。")
+                                startSilentReconnect()
+                            }
                         }
                     }
                 })
@@ -139,7 +166,7 @@ class Media3Player @Inject constructor(
             PlaybackState.BUFFERING -> "缓冲中..."
             PlaybackState.PLAYING -> "流畅输出"
             PlaybackState.IDLE -> "空闲"
-            PlaybackState.ERROR -> "播放失败"
+            PlaybackState.ERROR -> "严重错误"
         }
         val dropped = exoPlayer.videoDecoderCounters?.droppedBufferCount ?: 0
         _debugInfo.value = """
@@ -153,10 +180,11 @@ class Media3Player @Inject constructor(
         """.trimIndent()
     }
 
-    // 交给 Compose 的 PlayerView 去管理画布，不再手动设置
     override fun setSurface(surfaceView: SurfaceView?) {}
 
     override fun play(url: String) {
+        // 用户主动换台时，必须杀死上一个重连任务！
+        reconnectJob?.cancel()
         currentOriginalUrl = url
         currentFallbackLevel = 0
         realUrl = "抓取 302 中..."
@@ -202,10 +230,26 @@ class Media3Player @Inject constructor(
         exoPlayer.playWhenReady = true
     }
 
+    // 【终极重连魔法】
+    private fun startSilentReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = playerScope.launch {
+            _playbackState.value = PlaybackState.BUFFERING // UI 永远显示 Loading，假装在缓冲
+            _debugInfo.value = "⚠️ 断流！2秒后发起静默重连..."
+
+            delay(2000) // 严格遵守设计的 2 秒周期
+
+            Log.d(TAG, "🔄 [静默重连] 正在重新拉取流 (重置 302 Token): $currentOriginalUrl")
+            currentFallbackLevel = 0 // 回到 0 级，确保重新嗅探最新的 302 地址
+            internalPlay(currentOriginalUrl, 0)
+        }
+    }
+
     override fun pause() { exoPlayer.pause() }
     override fun resume() { exoPlayer.play() }
 
     override fun stop() {
+        reconnectJob?.cancel()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _playbackState.value = PlaybackState.IDLE

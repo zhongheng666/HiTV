@@ -5,8 +5,14 @@ import android.util.Log
 import android.view.SurfaceView
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.jdtech.mpv.MPVLib
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,12 +39,17 @@ class MpvPlayer @Inject constructor(
     private var hwDec = "未知"
     private var currentVo = "未知"
 
+    private var currentOriginalUrl = ""
+
+    // 【终极进化】：协程与重连守护
+    private val playerScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var reconnectJob: Job? = null
+
     init {
         try {
             MPVLib.create(context)
             MPVLib.init()
 
-            // 【核心修复】：绝对不能用 gpu，回归你最初测试过的能出画的神级组合！
             MPVLib.setOptionString("vo", "mediacodec_embed")
             MPVLib.setOptionString("hwdec", "mediacodec")
             MPVLib.setOptionString("hwdec-codecs", "all")
@@ -93,6 +104,9 @@ class MpvPlayer @Inject constructor(
     override fun play(url: String) {
         if (!isMpvInitialized) return
 
+        reconnectJob?.cancel() // 拦截重连任务
+        currentOriginalUrl = url
+
         _errorMessage.value = ""
         vCodec = "探测中..."
         aCodec = "探测中..."
@@ -103,17 +117,30 @@ class MpvPlayer @Inject constructor(
         Log.e(TAG, "=========================================")
         Log.e(TAG, "🚀 [真实MPV] 暴力加载: $url")
         MPVLib.command(arrayOf("stop"))
-
-        // 【核心修复】：粉碎暂停记忆！换台时必须主动取消暂停，否则永远卡第一帧！
         MPVLib.setPropertyBoolean("pause", false)
-
         MPVLib.command(arrayOf("loadfile", url))
+    }
+
+    private fun startSilentReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = playerScope.launch {
+            _playbackState.value = PlaybackState.BUFFERING // 维持 UI 加载态
+            _debugInfo.value = "⚠️ MPV 引擎断流！2秒后发起静默重连..."
+
+            delay(2000)
+
+            Log.d(TAG, "🔄 [真实MPV] 触发静默不死重连: $currentOriginalUrl")
+            MPVLib.command(arrayOf("stop"))
+            MPVLib.setPropertyBoolean("pause", false)
+            MPVLib.command(arrayOf("loadfile", currentOriginalUrl))
+        }
     }
 
     override fun pause() { if (isMpvInitialized) MPVLib.setPropertyBoolean("pause", true) }
     override fun resume() { if (isMpvInitialized) MPVLib.setPropertyBoolean("pause", false) }
 
     override fun stop() {
+        reconnectJob?.cancel()
         Log.d(TAG, "⏹ [真实MPV内核] 挂起播放")
         if (isMpvInitialized) MPVLib.command(arrayOf("stop"))
         _playbackState.value = PlaybackState.IDLE
@@ -128,10 +155,7 @@ class MpvPlayer @Inject constructor(
         when (property) {
             "video-format" -> { vCodec = value; Log.e(TAG, "🎥 [MPV 探针] 视频编码: $value") }
             "audio-codec-name" -> { aCodec = value; Log.e(TAG, "🎵 [MPV 探针] 音频编码: $value") }
-            "hwdec-current" -> {
-                hwDec = value
-                Log.e(TAG, "⚙️ [MPV 探针] 硬件解码状态: $value")
-            }
+            "hwdec-current" -> { hwDec = value; Log.e(TAG, "⚙️ [MPV 探针] 硬件解码状态: $value") }
             "current-vo" -> { currentVo = value; Log.e(TAG, "🖥 [MPV 探针] 视频渲染器: $value") }
         }
         updateDebugInfo()
@@ -153,8 +177,8 @@ class MpvPlayer @Inject constructor(
                 _playbackState.value = PlaybackState.PLAYING
             }
             9 -> {
-                Log.e(TAG, "💀 [真实MPV] 流媒体结束或断流！")
-                _playbackState.value = PlaybackState.IDLE
+                Log.e(TAG, "💀 [真实MPV] 探测到流媒体结束或异常断流！")
+                startSilentReconnect() // 只要流没了，死皮赖脸接上去！
             }
         }
         updateDebugInfo()
