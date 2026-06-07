@@ -530,8 +530,9 @@ fun ChannelListSidebar(
     var userActionTrigger by remember { mutableIntStateOf(0) }
     val focusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
 
+    // 【修复1】：将 it.id 改为 it.urlHash
     var currentFocusedIndex by remember {
-        mutableIntStateOf(channels.indexOfFirst { it.id == currentPlaying?.id }.coerceAtLeast(0))
+        mutableIntStateOf(channels.indexOfFirst { it.urlHash == currentPlaying?.urlHash }.coerceAtLeast(0))
     }
 
     // 【优化3】：频道列表无操作 3 秒后自动隐藏
@@ -604,7 +605,8 @@ fun ChannelListSidebar(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     currentPageChannels.forEachIndexed { indexOnPage, channel ->
                         val globalIndex = startIndex + indexOnPage
-                        val isPlaying = channel.id == currentPlaying?.id
+                        // 【修复2】：将 channel.id 改为 channel.urlHash
+                        val isPlaying = channel.urlHash == currentPlaying?.urlHash
                         val isFocused = globalIndex == currentFocusedIndex
                         val requester = focusRequesters.getOrPut(globalIndex) { FocusRequester() }
                         val scale by animateFloatAsState(if (isFocused) 1.05f else 1f, tween(100), label = "scale")

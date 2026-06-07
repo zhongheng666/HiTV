@@ -13,6 +13,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.htlac.hitv.core.data.datastore.SettingsManager
 import com.htlac.hitv.core.data.repository.ChannelRepository
+import com.htlac.hitv.core.network.EpgSyncDaemon
 import com.htlac.hitv.core.network.NtpManager
 import com.htlac.hitv.feature.settings.SettingsScreen
 import com.htlac.hitv.feature.splash.SplashScreen
@@ -24,39 +25,30 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    @Inject
-    lateinit var ntpManager: NtpManager
-
-    @Inject
-    lateinit var settingsManager: SettingsManager
-
-    @Inject
-    lateinit var channelRepository: ChannelRepository
+    @Inject lateinit var ntpManager: NtpManager
+    @Inject lateinit var settingsManager: SettingsManager
+    @Inject lateinit var channelRepository: ChannelRepository
+    @Inject lateinit var epgSyncDaemon: EpgSyncDaemon // 【注入守护进程】
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 【消灭原生冷启动黑屏】：在 Compose 渲染前，立刻将背景还原成纯黑，与我们的纯黑动画无缝衔接
-//        window.setBackgroundDrawableResource(android.R.color.black)
         super.onCreate(savedInstanceState)
 
         lifecycleScope.launch {
+            // 1. 同步阿里云时间
             ntpManager.syncTime()
+            // 2. 唤醒 EPG 守护进程
+            epgSyncDaemon.start(this)
         }
 
         setContent {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black
-            ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 val navController = rememberNavController()
 
                 NavHost(navController, startDestination = "splash") {
-
-                    // 【核心替换】：注入酷炫的描边动画
                     composable("splash") {
                         SplashScreen(
                             onAnimationFinished = {
                                 lifecycleScope.launch {
-                                    // 动画播完后，再进行判断和跳转，优雅从容
                                     val url = settingsManager.iptvUrlFlow.firstOrNull()
                                     if (!url.isNullOrBlank()) {
                                         val channels = channelRepository.getAllChannels().firstOrNull()
@@ -65,14 +57,10 @@ class MainActivity : ComponentActivity() {
                                                 popUpTo("splash") { inclusive = true }
                                             }
                                         } else {
-                                            navController.navigate("settings") {
-                                                popUpTo("splash") { inclusive = true }
-                                            }
+                                            navController.navigate("settings") { popUpTo("splash") { inclusive = true } }
                                         }
                                     } else {
-                                        navController.navigate("settings") {
-                                            popUpTo("splash") { inclusive = true }
-                                        }
+                                        navController.navigate("settings") { popUpTo("splash") { inclusive = true } }
                                     }
                                 }
                             }
@@ -82,9 +70,7 @@ class MainActivity : ComponentActivity() {
                     composable("settings") {
                         SettingsScreen(
                             onNavigateToPlayer = {
-                                navController.navigate("player") {
-                                    popUpTo("settings") { inclusive = true }
-                                }
+                                navController.navigate("player") { popUpTo("settings") { inclusive = true } }
                             }
                         )
                     }
@@ -92,9 +78,7 @@ class MainActivity : ComponentActivity() {
                     composable("player") {
                         com.htlac.hitv.feature.player.PlayerScreen(
                             onNavigateToSettings = {
-                                navController.navigate("settings") {
-                                    popUpTo("player") { inclusive = true }
-                                }
+                                navController.navigate("settings") { popUpTo("player") { inclusive = true } }
                             }
                         )
                     }

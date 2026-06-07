@@ -12,6 +12,7 @@ import com.htlac.hitv.core.data.local.Channel
 import com.htlac.hitv.core.data.local.EpgProgram
 import com.htlac.hitv.core.data.repository.ChannelRepository
 import com.htlac.hitv.core.data.repository.EpgRepository
+import com.htlac.hitv.core.network.EpgSyncDaemon
 import com.htlac.hitv.core.network.NtpManager
 import com.htlac.hitv.core.player.Media3Player
 import com.htlac.hitv.core.player.MpvPlayer
@@ -36,7 +37,8 @@ class PlayerViewModel @Inject constructor(
     private val channelRepository: ChannelRepository,
     private val epgRepository: EpgRepository,
     private val ntpManager: NtpManager,
-    private val settingsManager: SettingsManager
+    private val settingsManager: SettingsManager,
+    private val epgSyncDaemon: EpgSyncDaemon // 【注入守护进程】
 ) : ViewModel() {
 
     private val TAG = "HiTV_Debug"
@@ -168,35 +170,29 @@ class PlayerViewModel @Inject constructor(
     private fun fetchEpgForChannel(channel: Channel) {
         viewModelScope.launch {
             currentProgram = null; nextProgram = null
-
             val dbTotal = epgRepository.getProgramCount()
 
-            // 【消灭告警】：不再使用冗余的 Elvis 操作符，直接传原始值给底层 SQL 进行硬刚匹配！
-            Log.d(TAG, "📡 [UI指令] 用户切台，准备获取EPG: 源名称=[${channel.name}], 提取到 tvgId=[${channel.tvgId}], 提取到 tvgName=[${channel.tvgName}]")
+            epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 极速检索 Hash:\n[${channel.urlHash}]"
 
-            epgDebugInfo = "📦 DB总条数: $dbTotal\n🔍 传给SQL的值:\ntvgId=[${channel.tvgId}]\nchannelName=[${channel.name}]"
-
-            // 底层 SQL 会利用 tvgId 或者 channel.name 进行严格检索
-            val allPrograms = epgRepository.getProgramsForChannel(channel.tvgId, channel.name).firstOrNull() ?: emptyList()
+            val allPrograms = epgRepository.getProgramsForChannel(channel.urlHash).firstOrNull() ?: emptyList()
 
             if (allPrograms.isEmpty()) {
-                epgDebugInfo += "\n❌ 结果: 未匹配到任何满足条件的在播节目"
-                Log.d(TAG, "❌ [UI响应] 频道 ${channel.name} 匹配结果为空！")
+                epgDebugInfo += "\n❌ 结果: 数据过期或为空"
+                // 【核心升级：嗅探器报警！】
+                epgSyncDaemon.triggerSync("节目单过期嗅探报警")
                 return@launch
             }
 
             val currentTime = ntpManager.getCurrentTime()
             val timeFormatter = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
 
-            epgDebugInfo += "\n✅ 命中 ${allPrograms.size} 条有效节目"
-            epgDebugInfo += "\n⏰ NTP时间: ${timeFormatter.format(Date(currentTime))}"
+            epgDebugInfo += "\n✅ 命中 ${allPrograms.size} 条节目"
+            epgDebugInfo += "\n⏰ NTP: ${timeFormatter.format(Date(currentTime))}"
 
             currentProgram = allPrograms.firstOrNull()
             if (allPrograms.size > 1) {
                 nextProgram = allPrograms[1]
             }
-
-            Log.d(TAG, "✅ [UI响应] 频道 ${channel.name} 最终展现在播: ${currentProgram?.title}")
             epgDebugInfo += "\n▶️ 在播: ${currentProgram?.title}"
         }
     }
@@ -210,7 +206,7 @@ class PlayerViewModel @Inject constructor(
     fun playNextChannel() {
         val list = allChannels.value
         if (list.isEmpty() || currentPlayingChannel == null) return
-        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
+        val currentIndex = list.indexOfFirst { it.urlHash == currentPlayingChannel?.urlHash }
         val nextIndex = if (currentIndex + 1 < list.size) currentIndex + 1 else 0
         playChannel(list[nextIndex])
     }
@@ -218,7 +214,7 @@ class PlayerViewModel @Inject constructor(
     fun playPreviousChannel() {
         val list = allChannels.value
         if (list.isEmpty() || currentPlayingChannel == null) return
-        val currentIndex = list.indexOfFirst { it.id == currentPlayingChannel?.id }
+        val currentIndex = list.indexOfFirst { it.urlHash == currentPlayingChannel?.urlHash }
         val prevIndex = if (currentIndex - 1 >= 0) currentIndex - 1 else list.lastIndex
         playChannel(list[prevIndex])
     }

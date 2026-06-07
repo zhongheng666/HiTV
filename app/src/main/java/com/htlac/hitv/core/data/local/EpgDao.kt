@@ -8,9 +8,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface EpgDao {
-    // 保持您的严格匹配逻辑不变
-    @Query("SELECT * FROM epg_programs WHERE (tvgId = :tvgId OR channelName = :channelName) AND endTime > :currentTime ORDER BY startTime ASC")
-    fun getProgramsForChannel(tvgId: String, channelName: String, currentTime: Long): Flow<List<EpgProgram>>
+    // 【核心升级】：丢掉以前缓慢的名字匹配，直接拿 Hash 去找，O(1) 极速出结果！
+    @Query("SELECT * FROM epg_programs WHERE channelHash = :channelHash AND endTime > :currentTime ORDER BY startTime ASC")
+    fun getProgramsForChannel(channelHash: String, currentTime: Long): Flow<List<EpgProgram>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPrograms(programs: List<EpgProgram>)
@@ -18,7 +18,6 @@ interface EpgDao {
     @Query("DELETE FROM epg_programs")
     suspend fun deleteAll()
 
-    // 【新增探针】：随时查验数据库真实存活条数
     @Query("SELECT COUNT(*) FROM epg_programs")
     suspend fun getProgramCount(): Int
 }

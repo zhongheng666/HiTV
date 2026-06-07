@@ -17,19 +17,16 @@ import javax.inject.Inject
 class EpgParser @Inject constructor(
     private val okHttpClient: OkHttpClient
 ) {
-    // 【统一 Tag】
     private val TAG = "HiTV_Debug"
     private val dateFormat = SimpleDateFormat("yyyyMMddHHmmss Z", Locale.getDefault())
 
-    fun parse(url: String): Flow<List<EpgProgram>> = flow {
+    // 【核心升级】：接收已有的频道字典（tvgIdToHash 和 nameToHash）
+    fun parse(url: String, tvgIdToHash: Map<String, String>, nameToHash: Map<String, String>): Flow<List<EpgProgram>> = flow {
         Log.d(TAG, "🟢 [EPG解析器] 启动下载: $url")
         val request = Request.Builder().url(url).build()
         val response = okHttpClient.newCall(request).execute()
 
-        if (!response.isSuccessful) {
-            Log.e(TAG, "❌ [EPG解析器] 下载失败，HTTP状态码: ${response.code}")
-            throw Exception("EPG 下载失败，HTTP 状态码: ${response.code}")
-        }
+        if (!response.isSuccessful) throw Exception("EPG 下载失败，HTTP 状态码: ${response.code}")
 
         val inputStream = response.body?.byteStream() ?: return@flow
         val parser = Xml.newPullParser()
@@ -38,7 +35,6 @@ class EpgParser @Inject constructor(
         var eventType = parser.eventType
         val batchSize = 1000
         val currentBatch = mutableListOf<EpgProgram>()
-
         val channelMap = mutableMapOf<String, String>()
 
         var currentChannelId = ""
@@ -47,10 +43,8 @@ class EpgParser @Inject constructor(
         var currentEnd = 0L
         var currentDesc = ""
         var isParsingChannel = false
-
-        var parsedProgramCount = 0
-
-        Log.d(TAG, "🟢 [EPG解析器] 开始读取 XML 节点...")
+        var parsedCount = 0
+        var droppedCount = 0 // 记录被拦截丢弃的垃圾数据
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             when (eventType) {
@@ -63,18 +57,13 @@ class EpgParser @Inject constructor(
                         "display-name" -> {
                             if (isParsingChannel) {
                                 val name = parser.nextText().trim()
-                                if (currentChannelId.isNotEmpty() && name.isNotEmpty()) {
-                                    channelMap[currentChannelId] = name
-                                    Log.d(TAG, "📺 [EPG频道字典] 提取成功: ID=[$currentChannelId] -> 名字=[$name]")
-                                }
+                                if (currentChannelId.isNotEmpty() && name.isNotEmpty()) channelMap[currentChannelId] = name
                             }
                         }
                         "programme" -> {
                             currentChannelId = parser.getAttributeValue(null, "channel") ?: ""
-                            val startStr = parser.getAttributeValue(null, "start") ?: ""
-                            val stopStr = parser.getAttributeValue(null, "stop") ?: ""
-                            currentStart = parseTime(startStr)
-                            currentEnd = parseTime(stopStr)
+                            currentStart = parseTime(parser.getAttributeValue(null, "start") ?: "")
+                            currentEnd = parseTime(parser.getAttributeValue(null, "stop") ?: "")
                             currentTitle = ""
                             currentDesc = ""
                         }
@@ -83,33 +72,32 @@ class EpgParser @Inject constructor(
                     }
                 }
                 XmlPullParser.END_TAG -> {
-                    if (parser.name == "channel") {
-                        isParsingChannel = false
-                    }
+                    if (parser.name == "channel") isParsingChannel = false
                     if (parser.name == "programme") {
                         val mappedName = channelMap[currentChannelId] ?: ""
 
-                        // 抽样打印前 10 条节目单，检查时间戳是否解析出了 0
-                        if (parsedProgramCount < 10) {
-                            Log.d(TAG, "🎬 [EPG节目抽样] 关联ID=[$currentChannelId], 最终名=[$mappedName], 节目=[$currentTitle], 起=[$currentStart], 止=[$currentEnd]")
-                        }
-                        parsedProgramCount++
+                        // 【核心门卫拦截】：先用 tvgId 查字典，查不到再用名字查字典。如果字典里根本没这个台，直接丢弃！
+                        val matchedHash = tvgIdToHash[currentChannelId] ?: nameToHash[mappedName]
 
-                        currentBatch.add(
-                            EpgProgram(
-                                tvgId = currentChannelId,
-                                channelName = mappedName,
-                                title = currentTitle,
-                                startTime = currentStart,
-                                endTime = currentEnd,
-                                description = currentDesc
+                        if (matchedHash != null) {
+                            parsedCount++
+                            currentBatch.add(
+                                EpgProgram(
+                                    channelHash = matchedHash, // 强行绑定外键
+                                    tvgId = currentChannelId,
+                                    channelName = mappedName,
+                                    title = currentTitle,
+                                    startTime = currentStart,
+                                    endTime = currentEnd,
+                                    description = currentDesc
+                                )
                             )
-                        )
-
-                        if (currentBatch.size >= batchSize) {
-                            Log.d(TAG, "📦 [EPG解析器] 攒够 $batchSize 条，发射入库...")
-                            emit(currentBatch.toList())
-                            currentBatch.clear()
+                            if (currentBatch.size >= batchSize) {
+                                emit(currentBatch.toList())
+                                currentBatch.clear()
+                            }
+                        } else {
+                            droppedCount++
                         }
                     }
                 }
@@ -117,21 +105,13 @@ class EpgParser @Inject constructor(
             eventType = parser.next()
         }
 
-        if (currentBatch.isNotEmpty()) {
-            Log.d(TAG, "📦 [EPG解析器] 发射最后一批尾部数据: ${currentBatch.size} 条")
-            emit(currentBatch.toList())
-        }
+        if (currentBatch.isNotEmpty()) emit(currentBatch.toList())
         inputStream.close()
-        Log.d(TAG, "🟢 [EPG解析器] 彻底完成！共提炼节目: $parsedProgramCount 条")
+        Log.d(TAG, "🟢 [EPG解析器] 完成！提取有效节目: $parsedCount 条，拦截无关节目: $droppedCount 条")
     }.flowOn(Dispatchers.IO)
 
     private fun parseTime(timeStr: String): Long {
         if (timeStr.isEmpty()) return 0L
-        return try {
-            dateFormat.parse(timeStr)?.time ?: 0L
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ [EPG时间解析器] 严重错误！无法解析的时间格式: [$timeStr] -> 这将导致 endTime 为 0，在数据库中被抛弃！")
-            0L
-        }
+        return try { dateFormat.parse(timeStr)?.time ?: 0L } catch (e: Exception) { 0L }
     }
 }
