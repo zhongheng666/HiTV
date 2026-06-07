@@ -425,7 +425,7 @@ fun AdvancedSettingsSidebar(
     }
 }
 
-// 【重新设计】：带独立明确删除按钮的 TvRadioItem
+// 【彻底重构】：带独立且永远可见的垃圾桶按钮，并强制接管左右焦点跳转
 @Composable
 fun TvRadioItem(
     text: String,
@@ -434,11 +434,15 @@ fun TvRadioItem(
     onDeleteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    // 建立绝对坐标的焦点请求器
+    val mainFocusRequester = remember { FocusRequester() }
+    val deleteFocusRequester = remember { FocusRequester() }
+
     Row(
         modifier = modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 核心选择区域
+        // ================= 1. 核心选项卡 =================
         var isMainFocused by remember { mutableStateOf(false) }
         val mainScale by animateFloatAsState(if (isMainFocused) 1.03f else 1f, tween(150), label = "")
 
@@ -447,11 +451,22 @@ fun TvRadioItem(
                 .weight(1f)
                 .scale(mainScale)
                 .shadow(if (isMainFocused) 8.dp else 0.dp, RoundedCornerShape(8.dp))
-                .onFocusChanged { isMainFocused = it.isFocused }
-                .focusable()
-                .clickable { onClick() }
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (isMainFocused) Color.White else (if (isSelected) Color(0xFF1C1C1E) else Color.Transparent))
+                .focusRequester(mainFocusRequester) // 绑定焦点
+                .onFocusChanged { isMainFocused = it.isFocused }
+                .focusable()
+                .onPreviewKeyEvent { event ->
+                    // 【强制拦截】：只要在这里按了右键，强制把焦点甩给右边的垃圾桶！
+                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                        if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && onDeleteClick != null) {
+                            try { deleteFocusRequester.requestFocus() } catch (e: Exception) {}
+                            return@onPreviewKeyEvent true
+                        }
+                    }
+                    false
+                }
+                .clickable { onClick() }
                 .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -463,8 +478,9 @@ fun TvRadioItem(
             }
         }
 
-        // 独立删除按钮：明确展示，防止误操作
-        if (onDeleteClick != null && !isSelected) {
+        // ================= 2. 独立删除按钮 =================
+        // 取消了 !isSelected 的限制，永远显示！
+        if (onDeleteClick != null) {
             Spacer(modifier = Modifier.width(12.dp))
             var isDelFocused by remember { mutableStateOf(false) }
             val delScale by animateFloatAsState(if (isDelFocused) 1.1f else 1f, tween(150), label = "")
@@ -474,11 +490,23 @@ fun TvRadioItem(
                     .size(44.dp)
                     .scale(delScale)
                     .shadow(if (isDelFocused) 8.dp else 0.dp, RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(22.dp))
+                    // 焦点移上去变警戒红，平时保持暗灰
+                    .background(if (isDelFocused) Color(0xFFFF3B30) else Color(0xFF2C2C2E))
+                    .focusRequester(deleteFocusRequester) // 绑定焦点
                     .onFocusChanged { isDelFocused = it.isFocused }
                     .focusable()
-                    .clickable { onDeleteClick() }
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(if (isDelFocused) Color(0xFFFF3B30) else Color(0xFF2C2C2E)),
+                    .onPreviewKeyEvent { event ->
+                        // 【强制拦截】：在垃圾桶上按左键，强制退回到主选项卡
+                        if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                            if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                                try { mainFocusRequester.requestFocus() } catch (e: Exception) {}
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        false
+                    }
+                    .clickable { onDeleteClick() },
                 contentAlignment = Alignment.Center
             ) {
                 Text("🗑️", fontSize = 18.sp)
