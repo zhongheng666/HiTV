@@ -115,8 +115,16 @@ fun PlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 【核心修复】：引入强杀机制的单例 Toast
     LaunchedEffect(Unit) {
-        viewModel.epgSyncEvent.collect { message -> Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
+        var currentToast: Toast? = null
+        viewModel.epgSyncEvent.collect { message ->
+            // 收到新消息时，立刻 cancel() 强杀系统队列中上一个没播完的弹窗
+            currentToast?.cancel()
+            // 使用 LENGTH_SHORT 缩短单次停留时间
+            currentToast = Toast.makeText(context, message, Toast.LENGTH_SHORT)
+            currentToast?.show()
+        }
     }
 
     LaunchedEffect(viewModel.isChannelListVisible, viewModel.isAdvancedSettingsVisible) {

@@ -21,15 +21,17 @@ class EpgSyncDaemon @Inject constructor(
 
     private var isSyncing = false
 
+    // 【核心修复】：增加冷却时间锁
+    private var lastSyncAttemptTime = 0L
+    private val COOLDOWN_MS = 60_000L // 失败/成功后的冷却时间：60秒
+
     fun start(scope: CoroutineScope) {
         scope.launch {
             Log.d(TAG, "🛡️ [EPG 守护进程] 已在后台苏醒")
 
-            // 1. 开机自检：延迟 10 秒等网络彻底连上，然后静默拉取一次
             delay(10000)
             triggerSync("开机自检")
 
-            // 2. 定时轮询：只要 App 活着，每 12 小时自动拉一次
             while (isActive) {
                 delay(SYNC_INTERVAL)
                 triggerSync("定时器自动轮询")
@@ -38,13 +40,22 @@ class EpgSyncDaemon @Inject constructor(
     }
 
     suspend fun triggerSync(reason: String) {
-        if (isSyncing) return // 防抖
+        if (isSyncing) return
+
+        // 【核心修复】：防连击冷却机制！距离上次尝试不足60秒时，直接装死忽略
+        val now = System.currentTimeMillis()
+        if (now - lastSyncAttemptTime < COOLDOWN_MS) {
+            Log.w(TAG, "⏳ [EPG 守护进程] 距上次拉取不足60秒，处于冷却中，忽略触发: $reason")
+            return
+        }
 
         val epgUrl = settingsManager.epgUrlFlow.firstOrNull()
         if (epgUrl.isNullOrBlank()) return
 
         Log.i(TAG, "🔄 [EPG 守护进程] 触发静默同步，触发原因: $reason")
         isSyncing = true
+        lastSyncAttemptTime = now // 记录本次尝试的时间戳
+
         try {
             epgRepository.syncEpgFromUrl(epgUrl)
         } catch (e: Exception) {
