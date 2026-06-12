@@ -13,17 +13,21 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 @Module
-@InstallIn(SingletonComponent::class) // 这里的组件和 App 的生命周期一样长
+@InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
     @Provides
-    @Singleton // 保证整个 App 只有一个数据库实例
+    @Singleton
     fun provideDatabase(@ApplicationContext context: Context): HitvDatabase {
         return Room.databaseBuilder(
             context,
             HitvDatabase::class.java,
-            "hitv_database.db" // 数据库文件将保存在盒子里，名字叫这个
-        ).build()
+            "hitv_database.db"
+        )
+            // 【核心修复】：添加自动毁灭重建指令。
+            // 当发现表结构变动或版本号升级时，直接清空旧库重建表，彻底杜绝 Schema 闪退！
+            .fallbackToDestructiveMigration()
+            .build()
     }
 
     @Provides

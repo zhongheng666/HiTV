@@ -4,19 +4,25 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ChannelDao {
-    // 获取所有频道。返回 Flow 是为了让 UI 能够自动感知数据库的变化，数据库一更新，电视界面自动刷新
     @Query("SELECT * FROM channels")
     fun getAllChannels(): Flow<List<Channel>>
 
-    // 批量插入频道。如果有冲突直接替换 (REPLACE)
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChannels(channels: List<Channel>)
 
-    // 清空频道表
     @Query("DELETE FROM channels")
     suspend fun deleteAll()
+
+    // 【核心修复】：使用 @Transaction 开启事务。
+    // 这保证了“清空旧数据+插入新数据”是一个原子动作，Room 的 Flow 只会向 UI 发射【1次】更新，彻底消灭 UI 卡顿！
+    @Transaction
+    suspend fun replaceAll(channels: List<Channel>) {
+        deleteAll()
+        insertChannels(channels)
+    }
 }

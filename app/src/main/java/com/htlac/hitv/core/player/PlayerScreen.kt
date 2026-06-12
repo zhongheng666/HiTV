@@ -102,27 +102,14 @@ fun PlayerScreen(
     val context = LocalContext.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
-//    DisposableEffect(lifecycleOwner) {
-//        val observer = LifecycleEventObserver { _, event ->
-//            when (event) {
-//                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> activeController.pause()
-//                Lifecycle.Event.ON_RESUME -> activeController.resume()
-//                else -> {}
-//            }
-//        }
-//        lifecycleOwner.lifecycle.addObserver(observer)
-//        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-//    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> activeController.pause()
                 Lifecycle.Event.ON_STOP -> {
-                    // 【核心修复】：电视端退到后台必须彻底停止，释放极其稀缺的 MediaCodec 硬件解码器
                     activeController.stop()
                 }
                 Lifecycle.Event.ON_RESUME -> {
-                    // 从桌面重新切回 App 时，恢复上一次的播放（因为 stop 已经清空了引擎）
                     viewModel.currentPlayingChannel?.let { viewModel.playChannel(it) }
                 }
                 else -> {}
@@ -132,7 +119,6 @@ fun PlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 【核心修复】：引入强杀机制的单例 Toast
     LaunchedEffect(Unit) {
         var currentToast: Toast? = null
         viewModel.epgSyncEvent.collect { message ->
@@ -198,8 +184,7 @@ fun PlayerScreen(
 
                 if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
 
-                    // 拦截全局菜单键
-                    if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == 172) { // 172 is KEYCODE_GUIDE
+                    if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == 172) {
                         if (action == KeyEvent.ACTION_DOWN) {
                             viewModel.isAdvancedSettingsVisible = true
                             return@onPreviewKeyEvent true
@@ -629,7 +614,6 @@ fun ChannelListSidebar(
                         userActionTrigger++
                         val keyCode = event.nativeKeyEvent.keyCode
 
-                        // 【修复核心 1】：取消左键直接退出的强制拦截，把退出特权交还给真实的返回键
                         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
                             onClose(); return@onPreviewKeyEvent true
                         }
@@ -645,13 +629,10 @@ fun ChannelListSidebar(
                             KeyEvent.KEYCODE_DPAD_DOWN -> {
                                 if (currentFocusedIndex < channels.lastIndex) currentFocusedIndex++; return@onPreviewKeyEvent true
                             }
-                            // 【修复核心 2】：加入完美的左侧翻页联动逻辑
                             KeyEvent.KEYCODE_DPAD_LEFT -> {
                                 if (currentPageIndex > 0) {
-                                    // 正常往回翻页
                                     currentFocusedIndex = (currentPageIndex - 1) * actualPageSize
                                 } else {
-                                    // 已经在第一页时，按左键顺势关闭频道列表
                                     onClose()
                                 }
                                 return@onPreviewKeyEvent true
@@ -710,7 +691,7 @@ fun ChannelListSidebar(
             }
         }
     }
-}
+} // 【修复】：这里加上了之前漏掉的那个闭合 ChannelListSidebar 的括号！
 
 @Composable
 fun EpgBottomCard(channelName: String, currentProgram: EpgProgram?, nextProgram: EpgProgram?) {

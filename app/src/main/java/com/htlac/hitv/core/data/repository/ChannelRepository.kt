@@ -14,30 +14,32 @@ class ChannelRepository @Inject constructor(
     private val channelDao: ChannelDao,
     private val m3uParser: M3uParser
 ) {
-    // 供 UI 观察频道列表（当数据库有新数据时，UI会自动收到通知并刷新）
     fun getAllChannels(): Flow<List<Channel>> {
         return channelDao.getAllChannels()
     }
 
-    // 下载并解析 M3U 链接，边解析边存入数据库
     suspend fun syncChannelsFromUrl(m3uUrl: String) {
         Log.d("ChannelRepository", "准备开始同步 IPTV 源: $m3uUrl")
 
-        // 1. 先清空旧的频道数据
-        channelDao.deleteAll()
+        // 【核心修复】：不要一上来就清空数据库！
+        // 建立一个内存缓冲区，收集所有解析出来的频道（几千个对象大概只占不到 2MB 内存，非常安全）
+        val newChannels = mutableListOf<Channel>()
 
-        // 2. 调用解析器，收集流式发射过来的批次数据
         m3uParser.parse(m3uUrl)
             .catch { e ->
-                // 捕获网络或解析错误
-                Log.e("ChannelRepository", "同步 M3U 失败", e)
+                Log.e("ChannelRepository", "❌ 同步 M3U 失败（网络异常或格式错误），旧频道数据不受影响！", e)
+                throw e // 把异常抛给 ViewModel 处理，中断执行
             }
             .collect { batchChannels ->
-                // 3. 每收到一批 50 个频道，就塞进数据库
-                channelDao.insertChannels(batchChannels)
-                Log.d("ChannelRepository", "成功插入 ${batchChannels.size} 个频道到数据库")
+                newChannels.addAll(batchChannels)
             }
 
-        Log.d("ChannelRepository", "IPTV 源同步完成！")
+        // 【核心修复】：只有当网络成功且解析到了新数据时，才开启事务，一刀切地替换数据库
+        if (newChannels.isNotEmpty()) {
+            channelDao.replaceAll(newChannels)
+            Log.d("ChannelRepository", "✅ IPTV 源同步完成，利用事务一次性刷入 ${newChannels.size} 个频道！")
+        } else {
+            Log.w("ChannelRepository", "⚠️ M3U 文件为空或解析不出有效频道，不破坏现有数据库。")
+        }
     }
 }
