@@ -242,7 +242,9 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        media3Player.release()
+//        media3Player.release()
+        activePlayer.value.stop()
         mpvPlayer.release()
+
     }
 }

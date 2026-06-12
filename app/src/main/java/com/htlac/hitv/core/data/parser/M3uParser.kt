@@ -17,9 +17,7 @@ class M3uParser @Inject constructor(
         val request = Request.Builder().url(url).build()
         val response = okHttpClient.newCall(request).execute()
 
-        if (!response.isSuccessful) {
-            throw Exception("M3U 下载失败，HTTP 状态码: ${response.code}")
-        }
+        if (!response.isSuccessful) throw Exception("M3U 下载失败，状态码: ${response.code}")
 
         response.body?.charStream()?.buffered()?.use { reader ->
             var line: String?
@@ -27,7 +25,7 @@ class M3uParser @Inject constructor(
             var currentTvgId = ""
             var currentTvgName = ""
             var currentLogo = ""
-            var currentGroup = "未分类"
+            var currentGroup = "未分类" // 默认分类
 
             val batchSize = 50
             val currentBatch = mutableListOf<Channel>()
@@ -40,17 +38,24 @@ class M3uParser @Inject constructor(
                     currentTvgId = extractAttribute(currentLine, "tvg-id")
                     currentTvgName = extractAttribute(currentLine, "tvg-name")
                     currentLogo = extractAttribute(currentLine, "tvg-logo")
-                    currentGroup = extractAttribute(currentLine, "group-title").ifEmpty { "全部频道" }
-                    val commaIndex = currentLine.lastIndexOf(',')
+
+                    val groupTitle = extractAttribute(currentLine, "group-title")
+                    if (groupTitle.isNotEmpty()) currentGroup = groupTitle
+
+                    val commaIndex = currentLine.indexOf(',')
                     currentChannelName = if (commaIndex != -1 && commaIndex < currentLine.length - 1) {
                         currentLine.substring(commaIndex + 1).trim()
                     } else {
                         "未知频道"
                     }
-                } else if (!currentLine.startsWith("#")) {
-
+                }
+                // 【核心修复】：兼容国内绝大多数源使用的 #EXTGRP 独立分类标签！
+                else if (currentLine.startsWith("#EXTGRP:")) {
+                    currentGroup = currentLine.substringAfter("#EXTGRP:").trim()
+                }
+                else if (!currentLine.startsWith("#")) {
                     val channel = Channel(
-                        urlHash = HashUtil.md5(currentLine), // 【核心升级】：给频道打上 MD5 唯一钢印
+                        urlHash = HashUtil.md5(currentLine),
                         name = currentChannelName.ifEmpty { "未知频道" },
                         url = currentLine,
                         groupName = currentGroup,
@@ -64,11 +69,12 @@ class M3uParser @Inject constructor(
                         emit(currentBatch.toList())
                         currentBatch.clear()
                     }
+
+                    // 重置下一行的临时变量（但不能重置 currentGroup，因为有些源是一个分类管下面几十个台）
                     currentChannelName = ""
                     currentTvgId = ""
                     currentTvgName = ""
                     currentLogo = ""
-                    currentGroup = "未分类"
                 }
             }
             if (currentBatch.isNotEmpty()) emit(currentBatch.toList())
