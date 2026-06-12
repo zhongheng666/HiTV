@@ -37,37 +37,43 @@ class SettingsViewModel @Inject constructor(
     private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
     val syncState: StateFlow<SyncState> = _syncState
 
+    // 【深度修复】：将微型服务器挂载到 ViewModel，防止频繁重组导致 8080 端口崩溃
+    private var webServer: HiTvWebServer? = null
+
+    init {
+        webServer = HiTvWebServer(8080) { iptv, epg ->
+            saveUrlsAndSync(iptv, epg)
+        }
+        try {
+            webServer?.start()
+            Log.d(TAG, "🌐 局域网 WebServer 启动成功在 8080 端口")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ WebServer 启动失败，端口可能仍被占用", e)
+        }
+    }
+
     fun saveUrlsAndSync(iptv: String, epg: String) {
         if (iptv.isBlank()) {
             _syncState.value = SyncState.Error("IPTV 地址不能为空")
             return
         }
-
         viewModelScope.launch {
             _syncState.value = SyncState.Loading
             try {
                 settingsManager.saveIptvUrl(iptv)
                 settingsManager.saveEpgUrl(epg)
-
-                // 同步频道
                 channelRepository.syncChannelsFromUrl(iptv)
 
-                // 从数据库获取总数
                 val channels = channelRepository.getAllChannels().firstOrNull() ?: emptyList()
                 val channelCount = channels.size
-
-                // 【核心：将频道导入结果强力输出到 Logcat】
                 Log.i(TAG, "📺 IPTV 频道解析完成，成功导入 $channelCount 个频道！")
 
-                // 后台同步 EPG
                 if (epg.isNotBlank()) {
                     viewModelScope.launch {
                         try { epgRepository.syncEpgFromUrl(epg) } catch (e: Exception) { e.printStackTrace() }
                     }
                 }
-
                 _syncState.value = SyncState.Success(channelCount)
-
             } catch (e: Exception) {
                 Log.e(TAG, "❌ 频道解析失败", e)
                 _syncState.value = SyncState.Error("解析失败，请检查网络或地址")
@@ -75,7 +81,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun resetState() {
-        _syncState.value = SyncState.Idle
+    fun resetState() { _syncState.value = SyncState.Idle }
+
+    override fun onCleared() {
+        super.onCleared()
+        webServer?.stop() // 当彻底退出设置流程时，安全释放端口
     }
 }

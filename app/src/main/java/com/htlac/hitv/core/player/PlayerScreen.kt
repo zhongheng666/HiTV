@@ -73,7 +73,6 @@ import com.htlac.hitv.core.player.Media3Player
 import com.htlac.hitv.core.player.MpvPlayer
 import com.htlac.hitv.core.player.PlaybackState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -119,9 +118,7 @@ fun PlayerScreen(
     LaunchedEffect(Unit) {
         var currentToast: Toast? = null
         viewModel.epgSyncEvent.collect { message ->
-            // 收到新消息时，立刻 cancel() 强杀系统队列中上一个没播完的弹窗
             currentToast?.cancel()
-            // 使用 LENGTH_SHORT 缩短单次停留时间
             currentToast = Toast.makeText(context, message, Toast.LENGTH_SHORT)
             currentToast?.show()
         }
@@ -157,9 +154,6 @@ fun PlayerScreen(
         }
     }
 
-    // 【核心修复 3】：引入根节点长按状态锁
-    var isRootLongPressHandled by remember { mutableStateOf(false) }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -186,23 +180,23 @@ fun PlayerScreen(
 
                 if (!viewModel.isChannelListVisible && !viewModel.isAdvancedSettingsVisible) {
 
-                    if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    // 拦截全局菜单键
+                    if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == 172) { // 172 is KEYCODE_GUIDE
                         if (action == KeyEvent.ACTION_DOWN) {
-                            // 【长按拦截】：首次触发长按事件，弹出设置，并上锁
-                            if (event.nativeKeyEvent.repeatCount > 0 && !isRootLongPressHandled && viewModel.numpadBuffer.isEmpty()) {
-                                isRootLongPressHandled = true
-                                viewModel.isAdvancedSettingsVisible = true
-                            }
+                            viewModel.isAdvancedSettingsVisible = true
                             return@onPreviewKeyEvent true
-                        } else if (action == KeyEvent.ACTION_UP) {
+                        }
+                    }
+
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                        if (action == KeyEvent.ACTION_UP) {
                             if (viewModel.numpadBuffer.isNotEmpty()) {
                                 viewModel.executeNumpadSwitch()
-                            } else if (!isRootLongPressHandled) {
-                                // 只有在“非长按”的情况下松手，才算作真正的普通点击，呼出频道列表
+                            } else {
                                 viewModel.isChannelListVisible = true
                             }
-                            // 重置锁，为下一次按键做准备
-                            isRootLongPressHandled = false
+                            return@onPreviewKeyEvent true
+                        } else if (action == KeyEvent.ACTION_DOWN) {
                             return@onPreviewKeyEvent true
                         }
                     }
@@ -316,6 +310,7 @@ fun PlayerScreen(
                 channels = channels,
                 currentPlaying = viewModel.currentPlayingChannel,
                 onChannelSelected = { viewModel.playChannel(it) },
+                onOpenSettings = { viewModel.isAdvancedSettingsVisible = true },
                 onClose = { viewModel.isChannelListVisible = false }
             )
         }
@@ -578,6 +573,7 @@ fun ChannelListSidebar(
     channels: List<Channel>,
     currentPlaying: Channel?,
     onChannelSelected: (Channel) -> Unit,
+    onOpenSettings: () -> Unit,
     onClose: () -> Unit
 ) {
     var userActionTrigger by remember { mutableIntStateOf(0) }
@@ -591,15 +587,17 @@ fun ChannelListSidebar(
 
     LaunchedEffect(currentFocusedIndex) {
         delay(50)
-        try { focusRequesters[currentFocusedIndex]?.requestFocus() } catch (e: Exception) {}
+        try {
+            focusRequesters[currentFocusedIndex]?.requestFocus()
+        } catch (e: Exception) {}
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)).clickable { onClose() }) {
         BoxWithConstraints(modifier = Modifier.fillMaxHeight().width(360.dp).background(Color.Black.copy(alpha = 0.45f)).padding(24.dp)) {
             val availableHeight = maxHeight.value
-            val actualPageSize = maxOf(1, floor((availableHeight - 80f) / 68f).toInt())
+            val actualPageSize = maxOf(1, floor((availableHeight - 60f) / 68f).toInt())
 
-            val currentPageIndex = currentFocusedIndex / actualPageSize
+            val currentPageIndex = maxOf(0, currentFocusedIndex) / actualPageSize
             val currentPageIndicator = currentPageIndex + 1
             val totalPages = if (channels.isEmpty()) 1 else ceil(channels.size / actualPageSize.toFloat()).toInt()
 
@@ -613,8 +611,13 @@ fun ChannelListSidebar(
                         userActionTrigger++
                         val keyCode = event.nativeKeyEvent.keyCode
 
+                        // 【修复核心 1】：取消左键直接退出的强制拦截，把退出特权交还给真实的返回键
                         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
                             onClose(); return@onPreviewKeyEvent true
+                        }
+
+                        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == 172) {
+                            onOpenSettings(); return@onPreviewKeyEvent true
                         }
 
                         when (keyCode) {
@@ -624,15 +627,20 @@ fun ChannelListSidebar(
                             KeyEvent.KEYCODE_DPAD_DOWN -> {
                                 if (currentFocusedIndex < channels.lastIndex) currentFocusedIndex++; return@onPreviewKeyEvent true
                             }
+                            // 【修复核心 2】：加入完美的左侧翻页联动逻辑
                             KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                if (channels.isNotEmpty() && currentPageIndex > 0) {
+                                if (currentPageIndex > 0) {
+                                    // 正常往回翻页
                                     currentFocusedIndex = (currentPageIndex - 1) * actualPageSize
+                                } else {
+                                    // 已经在第一页时，按左键顺势关闭频道列表
+                                    onClose()
                                 }
                                 return@onPreviewKeyEvent true
                             }
                             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                                 if (channels.isNotEmpty() && currentPageIndex < totalPages - 1) {
-                                    currentFocusedIndex = (currentPageIndex + 1) * actualPageSize
+                                    currentFocusedIndex = minOf((currentPageIndex + 1) * actualPageSize, channels.lastIndex)
                                 }
                                 return@onPreviewKeyEvent true
                             }
@@ -643,10 +651,13 @@ fun ChannelListSidebar(
             ) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("全部频道", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    Text("$currentPageIndicator / $totalPages", color = Color.LightGray, fontSize = 14.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("⚙️ 按菜单键设置", color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.padding(end = 12.dp))
+                        Text("$currentPageIndicator / $totalPages", color = Color.LightGray, fontSize = 14.sp)
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     currentPageChannels.forEachIndexed { indexOnPage, channel ->

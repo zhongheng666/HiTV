@@ -5,10 +5,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 
-/**
- * 这是一个轻量级的 SNTP 客户端
- * 负责底层 UDP 协议的封包、发包和解包，获取精准的网络时间
- */
 object SntpClient {
     private const val ORIGINATE_TIME_OFFSET = 24
     private const val RECEIVE_TIME_OFFSET = 32
@@ -19,22 +15,16 @@ object SntpClient {
     private const val NTP_VERSION = 3
     private const val OFFSET_1900_TO_1970 = 2208988800L
 
-    var ntpTime: Long = 0
-        private set
-
-    /**
-     * 向指定的 NTP 服务器请求时间
-     */
-    fun requestTime(host: String, timeout: Int): Boolean {
+    // 【深度修复】：改用 Result 直接返回计算好的时间，彻底消灭全局 var 变量防并发污染
+    fun requestTime(host: String, timeout: Int): Result<Long> {
         var socket: DatagramSocket? = null
-        try {
+        return try {
             socket = DatagramSocket()
             socket.soTimeout = timeout
             val address = InetAddress.getByName(host)
             val buffer = ByteArray(NTP_PACKET_SIZE)
             val request = DatagramPacket(buffer, buffer.size, address, NTP_PORT)
 
-            // 设置版本号和模式 (Version 3, Mode 3 Client)
             buffer[0] = (NTP_MODE_CLIENT or (NTP_VERSION shl 3)).toByte()
 
             val requestTime = System.currentTimeMillis()
@@ -55,11 +45,9 @@ object SntpClient {
 
             val clockOffset = ((receiveTime - originateTime) + (transmitTime - responseTime)) / 2
 
-            ntpTime = responseTime + clockOffset
-            return true
+            Result.success(responseTime + clockOffset)
         } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+            Result.failure(e)
         } finally {
             socket?.close()
         }

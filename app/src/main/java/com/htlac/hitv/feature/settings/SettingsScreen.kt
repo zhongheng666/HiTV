@@ -84,16 +84,6 @@ fun SettingsScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        val webServer = HiTvWebServer(port = 8080) { iptv, epg ->
-            if (iptv.isNotEmpty()) inputIptvText = iptv
-            if (epg.isNotEmpty()) inputEpgText = epg
-            viewModel.saveUrlsAndSync(iptv, epg)
-        }
-        try { webServer.start() } catch (e: Exception) { e.printStackTrace() }
-        onDispose { webServer.stop() }
-    }
-
     LaunchedEffect(savedIptvUrl, savedEpgUrl) {
         if (inputIptvText.isEmpty() && savedIptvUrl.isNotEmpty()) inputIptvText = savedIptvUrl
         if (inputEpgText.isEmpty() && savedEpgUrl.isNotEmpty()) inputEpgText = savedEpgUrl

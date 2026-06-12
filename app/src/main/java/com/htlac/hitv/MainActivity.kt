@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
             // 1. 同步阿里云时间
             ntpManager.syncTime()
             // 2. 唤醒 EPG 守护进程
-            epgSyncDaemon.start(this)
+            epgSyncDaemon.start()
         }
 
         setContent {
