@@ -36,22 +36,26 @@ class EpgRepository @Inject constructor(
         Log.i(TAG, "📡 EPG 节目单开始在后台下载解析...")
         _epgSyncEvent.emit("📡 EPG 开始下载解析...")
 
-        epgDao.deleteAll()
         var totalPrograms = 0
+        var isOldDataCleared = false // 【防御编程】：增加安全锁
 
         try {
-            // 【核心升级】：在解析 EPG 之前，提取出现有的频道，做成两本字典
             val allChannels = channelDao.getAllChannels().firstOrNull() ?: emptyList()
             val tvgIdToHash = allChannels.filter { it.tvgId.isNotEmpty() }.associateBy({ it.tvgId }, { it.urlHash })
             val nameToHash = allChannels.associateBy({ it.name }, { it.urlHash })
 
-            // 把字典传给解析器，让它进行精准拦截过滤
             epgParser.parse(epgUrl, tvgIdToHash, nameToHash)
                 .catch { e ->
                     Log.e(TAG, "❌ [Repository] EPG 解析失败: ${e.message}", e)
+                    // 如果网络失败，旧数据根本没被删掉，用户依然可以看旧的节目单，体验降级但不断层！
                     _epgSyncEvent.emit("❌ EPG 解析失败")
                 }
                 .collect { batchPrograms ->
+                    // 【核心修复】：只在确实拿到新数据的第一时间，才安全地销毁旧数据
+                    if (!isOldDataCleared && batchPrograms.isNotEmpty()) {
+                        epgDao.deleteAll()
+                        isOldDataCleared = true
+                    }
                     epgDao.insertPrograms(batchPrograms)
                     totalPrograms += batchPrograms.size
                 }

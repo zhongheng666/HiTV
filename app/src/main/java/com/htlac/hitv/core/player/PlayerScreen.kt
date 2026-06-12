@@ -102,11 +102,29 @@ fun PlayerScreen(
     val context = LocalContext.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
+//    DisposableEffect(lifecycleOwner) {
+//        val observer = LifecycleEventObserver { _, event ->
+//            when (event) {
+//                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> activeController.pause()
+//                Lifecycle.Event.ON_RESUME -> activeController.resume()
+//                else -> {}
+//            }
+//        }
+//        lifecycleOwner.lifecycle.addObserver(observer)
+//        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+//    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> activeController.pause()
-                Lifecycle.Event.ON_RESUME -> activeController.resume()
+                Lifecycle.Event.ON_PAUSE -> activeController.pause()
+                Lifecycle.Event.ON_STOP -> {
+                    // 【核心修复】：电视端退到后台必须彻底停止，释放极其稀缺的 MediaCodec 硬件解码器
+                    activeController.stop()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    // 从桌面重新切回 App 时，恢复上一次的播放（因为 stop 已经清空了引擎）
+                    viewModel.currentPlayingChannel?.let { viewModel.playChannel(it) }
+                }
                 else -> {}
             }
         }
