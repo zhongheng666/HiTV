@@ -117,7 +117,7 @@ class MpvPlayer @Inject constructor(
         Log.e(TAG, "=========================================")
         Log.e(TAG, "🚀 [真实MPV] 暴力加载: $url")
         MPVLib.command(arrayOf("stop"))
-        MPVLib.setPropertyBoolean("pause", false)
+        //MPVLib.setPropertyBoolean("pause", false)
         MPVLib.command(arrayOf("loadfile", url))
     }
 
@@ -131,7 +131,7 @@ class MpvPlayer @Inject constructor(
 
             Log.d(TAG, "🔄 [真实MPV] 触发静默不死重连: $currentOriginalUrl")
             MPVLib.command(arrayOf("stop"))
-            MPVLib.setPropertyBoolean("pause", false)
+            //MPVLib.setPropertyBoolean("pause", false)
             MPVLib.command(arrayOf("loadfile", currentOriginalUrl))
         }
     }
@@ -174,6 +174,7 @@ class MpvPlayer @Inject constructor(
             }
             8 -> {
                 Log.d(TAG, "▶️ [真实MPV] 流媒体加载完毕！")
+                MPVLib.setPropertyBoolean("pause", false)
                 _playbackState.value = PlaybackState.PLAYING
             }
             9 -> {

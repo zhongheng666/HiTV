@@ -196,6 +196,7 @@ class Media3Player @Inject constructor(
         _errorMessage.value = ""
         currentResolution = "解析中..."
         videoCodecInfo = "探测中..."
+        currentDecoder = "探测中..."
         updateDebugInfo()
 
         exoPlayer.stop()
