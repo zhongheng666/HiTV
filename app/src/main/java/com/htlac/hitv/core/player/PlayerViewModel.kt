@@ -1,4 +1,4 @@
-package com.htlac.hitv.feature.player
+package com.htlac.hitv.core.player
 
 import android.view.SurfaceView
 import android.util.Log

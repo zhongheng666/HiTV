@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     composable("player") {
-                        com.htlac.hitv.feature.player.PlayerScreen(
+                        com.htlac.hitv.core.player.PlayerScreen(
                             onNavigateToSettings = {
                                 navController.navigate("settings") { popUpTo("player") { inclusive = true } }
                             }

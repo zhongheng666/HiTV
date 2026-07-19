@@ -20,10 +20,8 @@ object DatabaseModule {
 
     // 【修复】：编写正规的数据库迁移路径。即使结构没变只是为了刷版本号，也要给一个空实现
     private val MIGRATION_1_2 = object : Migration(1, 2) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            // 如果在此版本中增加了新表或新字段，在这里写 SQL，例如:
-            // database.execSQL("ALTER TABLE channels ADD COLUMN new_column TEXT DEFAULT '' NOT NULL")
-            // 如果只是因为其他原因升版本而表结构没变，则留空即可。
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // 留空即可
         }
     }
 
